@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+output/
+tessdata/
+Input_Prasanga/
