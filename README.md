@@ -1,9 +1,9 @@
-# Lipi-Sampada — Phase 0 POV
+# Lipi-Sampada — Phase 0/1 POV
 
 Converts mobile-scanned Kannada book pages (Yakshagana/prose) into paragraph
-snippets, runs EasyOCR + Tesseract on each snippet, and runs Surya (a local
-VLM-based OCR) once per whole page, producing a JSON comparison and a
-visual QA report. Fully local, no paid services.
+snippets, runs EasyOCR + Tesseract + Surya (a local VLM-based OCR) on each
+snippet, asks a local LLM (via Ollama) to pick/correct the best reading, and
+writes a JSON comparison + a visual QA report. Fully local, no paid services.
 
 ## Setup
 
@@ -53,14 +53,36 @@ visual QA report. Fully local, no paid services.
    Expand-Archive -Path "$dest\cudart.zip" -DestinationPath $dest -Force
    Remove-Item "$dest\llama.zip", "$dest\cudart.zip"
    ```
-   `ocr_engines.py` points Surya at this binary via `LLAMA_CPP_BINARY`.
-   Surya is only run once per whole page (`run_surya_page`, which downscales
-   to ~800px wide first) — its full-page mode fell into a repetition loop
-   on our small pre-cropped paragraph snippets, and ran extremely slowly on
-   full-resolution pages, but works well (~10-30s/page) on a downscaled
-   whole page.
+   `ocr_engines.py` points Surya at this binary via `LLAMA_CPP_BINARY`. Surya
+   runs once per paragraph snippet (matching EasyOCR/Tesseract), not once per
+   page — it needs `layout.trim_to_ink`'s ink-density reframing to behave
+   (see that function's docstring: too-sparse or too-tight crops send its
+   decoder into a repetition loop or make it drop the block as blank). Even
+   with that fix, occasional bad output still gets through — `ocr_engines.py`
+   flags it via `run_surya`'s `suspect` field rather than retrying
+   indefinitely (see that module's comments for why an internal-regen and an
+   external kill-and-restart retry were both tried and dropped: real
+   failures turned out to be deterministic per crop, and one pathological
+   snippet burned 10+ minutes trying to retry its way to a clean result).
 
-## Running the POV pipeline
+5. **Ollama, for the Phase 1 AI refiner** — install from
+   [ollama.com](https://ollama.com) or `winget install --id Ollama.Ollama`,
+   then pull the model used here:
+   ```
+   ollama pull qwen2.5:7b-instruct
+   ```
+   `refiner.py` talks to Ollama's local HTTP API (`localhost:11434`, no
+   Python client library needed) — make sure `ollama serve` is running (the
+   Windows installer starts it as a background service automatically).
+   Llama3.1:8b was tested as an alternative and rejected: it was better at
+   respecting the majority-agreement hint but worse at normalizing OCR-mangled
+   verse markers and once kept a Surya hallucination the refiner should have
+   discarded. Qwen isn't perfect either — the refiner has been seen to
+   introduce a new error on a snippet none of the three engines got wrong on
+   ("ತುಂಟತನ" → "ತುಂಡತನ"), a reminder that its output is a strong draft for
+   Phase 2 human review, not ground truth.
+
+## Running the pipeline
 
 ```
 .venv\Scripts\python -m lipisampada.pipeline --input Input_Prasanga --pages 3
@@ -69,16 +91,24 @@ visual QA report. Fully local, no paid services.
 - `--pages N` limits to the first N scans (sorted by filename) — good for a
   quick smoke test before running the full batch.
 - Omit `--pages` to process every `.tif` in the input folder.
+- `--no-refine` skips the LLM step (Phase 0 behavior; doesn't need Ollama
+  running).
 - Output goes to `output/<timestamp>/`:
   - `snippets/` — cropped paragraph images
-  - `result.json` — per-paragraph OCR ensemble output (text + confidence
-    from both engines, disagreement/low-confidence flags)
+  - `result.json` — per-paragraph engine outputs, ensemble flags
+    (disagreement/low-confidence/majority-agreement/surya-suspect), and the
+    LLM-refined text
+  - `corrections.db` — SQLite log of every LLM refinement (the seed of the
+    "self-correction dictionary" from the original brief; word-level
+    frequency mining off this table is a follow-up increment, not built yet)
   - `report.html` — open this in a browser to visually compare each
-    snippet against both engines' output; flagged rows are highlighted.
+    snippet's four candidates against the source image; flagged rows are
+    highlighted.
 
 ## Roadmap
 
-This is Phase 0 of a larger pipeline. See the project plan for Phase 1
-(Ollama-based semantic refiner + self-correction dictionary), Phase 2
-(human-in-the-loop crowd review app), and Phase 3 (active learning /
-fine-tuning loop).
+Phase 0 (layout slicer + 3-engine OCR ensemble) and the first pass of
+Phase 1 (LLM refiner + correction log) are built. Still ahead: Phase 2
+(human-in-the-loop crowd review app with two-reviewer consensus) and
+Phase 3 (active learning / OCR fine-tuning loop once ~1,000 corrections
+are collected).

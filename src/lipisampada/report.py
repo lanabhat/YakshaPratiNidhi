@@ -1,7 +1,7 @@
 """Generates a static HTML side-by-side viewer: each paragraph snippet next
-to EasyOCR/Tesseract/Surya text, with disagreements and low-confidence
-snippets highlighted. No server or DB needed — open the file directly in a
-browser."""
+to EasyOCR/Tesseract/Surya text (and the LLM-refined text, if present),
+with disagreements and low-confidence snippets highlighted. No server or
+DB needed — open the file directly in a browser."""
 
 import html
 from pathlib import Path
@@ -14,9 +14,11 @@ _ROW_TEMPLATE = """
     <div class="engine"><span class="label">EasyOCR</span> <span class="conf">{easy_conf:.0%}</span> {easy_text}</div>
     <div class="engine"><span class="label">Tesseract</span> <span class="conf">{tess_conf:.0%}</span> {tess_text}</div>
     <div class="engine"><span class="label">Surya</span> <span class="conf">{surya_conf:.0%}*</span> {surya_text}{surya_flag}</div>
-  </div>
+{refined_row}  </div>
 </div>
 """
+
+_REFINED_ROW_TEMPLATE = '    <div class="engine refined"><span class="label">Refined (LLM)</span> {refined_text}</div>\n'
 
 _PAGE_TEMPLATE = """<!doctype html>
 <html>
@@ -37,6 +39,8 @@ _PAGE_TEMPLATE = """<!doctype html>
   .label {{ display: inline-block; width: 90px; color: #7ab8ff; font-size: 0.8rem; }}
   .conf {{ color: #888; font-size: 0.8rem; }}
   .suspect {{ color: #e0a955; font-size: 0.8rem; }}
+  .engine.refined {{ margin-top: 0.4rem; padding-top: 0.4rem; border-top: 1px dashed #333; }}
+  .engine.refined .label {{ color: #4caf7d; }}
 </style>
 </head>
 <body>
@@ -58,6 +62,12 @@ def generate_report(records: list[dict], run_dir: Path, output_path: Path) -> No
             flagged_count += 1
         if r["flags"]["majority_agreement"]:
             agree_count += 1
+        refined_row = ""
+        if "refined" in r:
+            refined_row = _REFINED_ROW_TEMPLATE.format(
+                refined_text=html.escape(r["refined"]["text"]) or "<i>(empty)</i>"
+            )
+
         rows.append(
             _ROW_TEMPLATE.format(
                 row_class="flagged" if is_flagged else "",
@@ -73,6 +83,7 @@ def generate_report(records: list[dict], run_dir: Path, output_path: Path) -> No
                 tess_text=html.escape(r["tesseract"]["text"]) or "<i>(empty)</i>",
                 surya_text=html.escape(r["surya"]["text"]) or "<i>(empty)</i>",
                 surya_flag=" <span class='suspect'>(suspect output)</span>" if r["flags"]["surya_suspect"] else "",
+                refined_row=refined_row,
             )
         )
 
