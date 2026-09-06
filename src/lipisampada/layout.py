@@ -4,6 +4,7 @@ using vertical/horizontal projection profiles of the binarized page."""
 import re
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 # IMG_20220327_0047_1L.tif -> page 47, side "1L"
@@ -97,6 +98,58 @@ def slice_page(binary: np.ndarray) -> list[Snippet]:
     return snippets
 
 
+TARGET_INK_DENSITY = 0.07
+MIN_MARGIN = 4
+MAX_MARGIN = 60
+
+
+def _margin_for_target_density(ink_pixels: int, height: int, width: int) -> int:
+    """Margin that brings a tight crop's ink density to TARGET_INK_DENSITY.
+
+    Padding by m grows the area to (h+2m)(w+2m), so solving
+    ink / ((h+2m)(w+2m)) = target for m is one quadratic:
+    4m^2 + 2(h+w)m + (hw - ink/target) = 0."""
+    target_area = ink_pixels / TARGET_INK_DENSITY
+    c = height * width - target_area
+    if c >= 0:  # already at or below the target density; don't pad further
+        return MIN_MARGIN
+    m = (-2 * (height + width) + np.sqrt(4 * (height + width) ** 2 - 16 * c)) / 8
+    return int(np.clip(m, MIN_MARGIN, MAX_MARGIN))
+
+
+def trim_to_ink(crop: np.ndarray) -> np.ndarray:
+    """Reframes a crop to its text plus a margin sized for ink density.
+
+    The column slicer crops the full column width even when a line holds a
+    single short centred word, so ink density varies wildly between
+    snippets — and Surya's VLM fails at both extremes. Measured on real
+    snippets: at ~1.6% ink (one word on a wide blank strip) the decoder
+    fell into a repetition loop, emitting 2000+ tokens for one word; at
+    13-20% (trimmed flush to the glyphs, no margin at all) it emitted no
+    text block at all, since Surya drops predicted text blocks whose
+    region reads as blank. Everything in the ~5-10% band read correctly.
+
+    So rather than pad by a fixed amount — which over-pads a short word and
+    under-pads a full paragraph — trim to the ink bounding box and re-add
+    the margin that lands this particular crop in that band. The margin is
+    filled with the crop's median value, the scanned paper's off-white
+    background, so it blends instead of framing the text in pure white."""
+    if crop.size == 0:
+        return crop
+
+    _, ink = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    ys, xs = np.nonzero(ink)
+    if ys.size == 0:
+        return crop
+
+    tight = crop[int(ys.min()) : int(ys.max()) + 1, int(xs.min()) : int(xs.max()) + 1]
+    margin = _margin_for_target_density(int(ys.size), tight.shape[0], tight.shape[1])
+    background = int(np.median(crop))
+    return cv2.copyMakeBorder(
+        tight, margin, margin, margin, margin, cv2.BORDER_CONSTANT, value=background
+    )
+
+
 def crop_snippet(image: np.ndarray, snippet: Snippet, padding: int = 4) -> np.ndarray:
     x0, y0, x1, y1 = snippet.bbox
     h, w = image.shape[:2]
@@ -104,4 +157,4 @@ def crop_snippet(image: np.ndarray, snippet: Snippet, padding: int = 4) -> np.nd
     y0 = max(0, y0 - padding)
     x1 = min(w, x1 + padding)
     y1 = min(h, y1 + padding)
-    return image[y0:y1, x0:x1]
+    return trim_to_ink(image[y0:y1, x0:x1])
