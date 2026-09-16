@@ -1,9 +1,11 @@
-# Lipi-Sampada — Phase 0/1 POV
+# Lipi-Sampada — Phase 0/1/2 POV
 
 Converts mobile-scanned Kannada book pages (Yakshagana/prose) into paragraph
 snippets, runs EasyOCR + Tesseract + Surya (a local VLM-based OCR) on each
 snippet, asks a local LLM (via Ollama) to pick/correct the best reading, and
-writes a JSON comparison + a visual QA report. Fully local, no paid services.
+writes a JSON comparison + a visual QA report. A small local web app then
+lets human reviewers confirm or correct each snippet with a two-reviewer
+consensus check. Fully local, no paid services.
 
 ## Setup
 
@@ -105,10 +107,33 @@ writes a JSON comparison + a visual QA report. Fully local, no paid services.
     snippet's four candidates against the source image; flagged rows are
     highlighted.
 
+## Running the Phase 2 review app
+
+A small FastAPI + vanilla-JS app implements the two-reviewer consensus
+flow from the original brief: a snippet shown to reviewer A is confirmed
+outright if they leave it unchanged; an edit sends it to a second,
+independent reviewer B (shown the original AI draft, not A's edit); if B
+submits the same edit it's `provisionally_verified`, otherwise it's
+flagged `needs_expert` for a final, authoritative resolution. There's no
+login — reviewers just type a name once (stored in the browser) — so
+anyone can act as the "expert" on a flagged snippet; fine for a small
+trusted group, worth revisiting before opening this to the wider public.
+
+```
+$env:LIPISAMPADA_RUN_DIR = "output\poc_5pages_refined"   # or any run with a result.json
+.venv\Scripts\python -m uvicorn lipisampada.review_app:app --reload
+```
+
+Then open `http://127.0.0.1:8000`. On first launch it seeds a
+`review.db` (SQLite, per run directory) from that run's `result.json`;
+re-running is safe, existing rows aren't touched. `GET /api/stats` gives
+a quick progress readout without opening the browser.
+
 ## Roadmap
 
-Phase 0 (layout slicer + 3-engine OCR ensemble) and the first pass of
-Phase 1 (LLM refiner + correction log) are built. Still ahead: Phase 2
-(human-in-the-loop crowd review app with two-reviewer consensus) and
-Phase 3 (active learning / OCR fine-tuning loop once ~1,000 corrections
-are collected).
+Phase 0 (layout slicer + 3-engine OCR ensemble), Phase 1 (LLM refiner +
+correction log), and a first pass of Phase 2 (human review app with
+two-reviewer consensus) are built. Still ahead: wiring the review app's
+`final_text` decisions back into the correction log/self-correction
+dictionary, and Phase 3 (active learning / OCR fine-tuning loop once
+~1,000 corrections are collected).

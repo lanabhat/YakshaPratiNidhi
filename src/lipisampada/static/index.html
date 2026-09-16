@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lipi-Sampada Review</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    background: #0f0f10; color: #eee; margin: 0;
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.75rem 1.25rem; background: #1a1a1c; border-bottom: 1px solid #2a2a2c;
+  }
+  header h1 { font-size: 1rem; margin: 0; color: #ccc; font-weight: 600; }
+  #reviewer-badge { font-size: 0.85rem; color: #7ab8ff; }
+  #reviewer-badge button { margin-left: 0.5rem; background: none; border: none; color: #888; cursor: pointer; text-decoration: underline; font-size: 0.8rem; }
+  #progress { font-size: 0.8rem; color: #888; padding: 0.4rem 1.25rem; background: #161617; }
+  main { max-width: 900px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    display: flex; align-items: center; justify-content: center; z-index: 10;
+  }
+  .overlay[hidden] { display: none; }
+  .overlay .card {
+    background: #1e1e20; border-radius: 10px; padding: 1.75rem; width: min(90vw, 380px);
+  }
+  .overlay .card h2 { margin: 0 0 0.75rem; font-size: 1.05rem; }
+  .overlay .card input {
+    width: 100%; padding: 0.6rem 0.7rem; border-radius: 6px; border: 1px solid #333;
+    background: #141415; color: #eee; font-size: 1rem; margin-bottom: 0.75rem;
+  }
+  .overlay .card button, .btn {
+    padding: 0.55rem 1rem; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 0.9rem; font-weight: 600;
+  }
+  .btn-primary { background: #4c8bf5; color: white; }
+  .btn-primary:hover { background: #3d78e0; }
+  .btn-secondary { background: #2a2a2d; color: #eee; }
+  .btn-secondary:hover { background: #35353a; }
+  .btn-expert { background: #b5732e; color: white; }
+  .btn-expert:hover { background: #9c5f22; }
+
+  .snippet-img-wrap { background: #fff; border-radius: 8px; padding: 0.5rem; margin-bottom: 1rem; text-align: center; }
+  .snippet-img-wrap img { max-width: 100%; max-height: 45vh; }
+  .meta-row { font-size: 0.8rem; color: #888; margin-bottom: 0.75rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+  .status-pill { padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; background: #2a2a2d; }
+  .status-pill.needs_expert { background: #5a3a1a; color: #f0b070; }
+  .status-pill.awaiting_second_review { background: #1a3a4a; color: #7ab8ff; }
+  #f-disagreement { background: #241a12; border: 1px solid #4a3520; border-radius: 8px; padding: 0.7rem 0.9rem; margin-bottom: 0.8rem; font-size: 0.9rem; }
+  #f-disagreement .dis-row { margin: 0.3rem 0; }
+  #f-disagreement .dis-label { color: #e0a955; font-size: 0.75rem; display: block; }
+
+  textarea {
+    width: 100%; min-height: 6rem; padding: 0.75rem; border-radius: 8px; border: 1px solid #333;
+    background: #17171a; color: #f0f0f0; font-size: 1.15rem; line-height: 1.6; resize: vertical;
+  }
+  .actions { display: flex; gap: 0.6rem; margin-top: 0.9rem; flex-wrap: wrap; }
+
+  details { margin-top: 1.1rem; background: #17171a; border-radius: 8px; padding: 0.6rem 0.9rem; }
+  details summary { cursor: pointer; font-size: 0.85rem; color: #999; }
+  .raw-row { margin: 0.5rem 0; font-size: 0.95rem; }
+  .raw-label { display: inline-block; width: 85px; color: #7ab8ff; font-size: 0.75rem; vertical-align: top; }
+
+  #empty-state, #loading { text-align: center; color: #888; padding: 3rem 1rem; }
+  #toast {
+    position: fixed; bottom: 1.25rem; left: 50%; transform: translateX(-50%);
+    background: #2a2a2d; color: #eee; padding: 0.6rem 1.1rem; border-radius: 8px;
+    font-size: 0.85rem; opacity: 0; transition: opacity 0.2s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Lipi-Sampada Review</h1>
+  <div id="reviewer-badge"></div>
+</header>
+<div id="progress"></div>
+
+<main>
+  <div id="loading">Loading…</div>
+  <div id="empty-state" hidden>Nothing left to review right now — thank you!</div>
+
+  <div id="review-card" hidden>
+    <div class="meta-row">
+      <span>Page <span id="f-page"></span> · side <span id="f-side"></span> · #<span id="f-seq"></span></span>
+      <span id="f-status" class="status-pill"></span>
+    </div>
+    <div class="snippet-img-wrap"><img id="f-img" alt="snippet"></div>
+    <div id="f-disagreement" hidden></div>
+    <textarea id="f-text" lang="kn"></textarea>
+    <div class="actions">
+      <button class="btn btn-primary" id="btn-looks-good">Looks good, no change</button>
+      <button class="btn btn-secondary" id="btn-submit-edit">Submit edited text</button>
+      <button class="btn btn-expert" id="btn-expert" hidden>Submit as expert (final)</button>
+    </div>
+    <details>
+      <summary>Show raw engine readings</summary>
+      <div class="raw-row"><span class="raw-label">EasyOCR</span><span id="f-easy"></span></div>
+      <div class="raw-row"><span class="raw-label">Tesseract</span><span id="f-tess"></span></div>
+      <div class="raw-row"><span class="raw-label">Surya</span><span id="f-surya"></span></div>
+    </details>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<div class="overlay" id="name-overlay">
+  <div class="card">
+    <h2>Who's reviewing?</h2>
+    <input type="text" id="name-input" placeholder="Your name or handle" autofocus>
+    <button class="btn btn-primary" id="name-submit" style="width:100%">Start reviewing</button>
+  </div>
+</div>
+
+<script>
+const STORAGE_KEY = "lipisampada_reviewer";
+let current = null;
+
+function reviewerName() { return localStorage.getItem(STORAGE_KEY); }
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function showNameOverlay() {
+  document.getElementById("name-overlay").hidden = false;
+}
+function hideNameOverlay() {
+  document.getElementById("name-overlay").hidden = true;
+}
+
+function renderBadge() {
+  const name = reviewerName();
+  document.getElementById("reviewer-badge").innerHTML = name
+    ? `${name} <button id="switch-user">switch</button>` : "";
+  const sw = document.getElementById("switch-user");
+  if (sw) sw.onclick = () => { localStorage.removeItem(STORAGE_KEY); showNameOverlay(); };
+}
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 1500);
+}
+
+async function refreshStats() {
+  const r = await fetch("/api/stats");
+  const s = await r.json();
+  document.getElementById("progress").textContent =
+    `${s.done} / ${s.total} finalized` +
+    (s.by_status.needs_expert ? ` · ${s.by_status.needs_expert} need expert review` : "") +
+    (s.by_status.awaiting_second_review ? ` · ${s.by_status.awaiting_second_review} awaiting a second reviewer` : "");
+}
+
+async function loadNext() {
+  document.getElementById("review-card").hidden = true;
+  document.getElementById("empty-state").hidden = true;
+  document.getElementById("loading").hidden = false;
+
+  const r = await fetch(`/api/next?reviewer=${encodeURIComponent(reviewerName())}`);
+  const data = await r.json();
+  document.getElementById("loading").hidden = true;
+
+  if (!data.snippet) {
+    document.getElementById("empty-state").hidden = false;
+    current = null;
+    return;
+  }
+  current = data.snippet;
+  document.getElementById("f-page").textContent = current.page_number;
+  document.getElementById("f-side").textContent = current.side;
+  document.getElementById("f-seq").textContent = current.paragraph_sequence;
+  document.getElementById("f-img").src = current.image_url;
+  document.getElementById("f-text").value =
+    current.status === "awaiting_second_review" ? current.refined_text : (current.final_text || current.refined_text);
+  document.getElementById("f-easy").textContent = current.easyocr_text || "(empty)";
+  document.getElementById("f-tess").textContent = current.tesseract_text || "(empty)";
+  document.getElementById("f-surya").textContent = current.surya_text || "(empty)";
+
+  const pill = document.getElementById("f-status");
+  pill.textContent = current.status.replaceAll("_", " ");
+  pill.className = "status-pill " + current.status;
+
+  const isExpertCase = current.status === "needs_expert";
+  document.getElementById("btn-expert").hidden = !isExpertCase;
+  document.getElementById("btn-looks-good").hidden = isExpertCase;
+  document.getElementById("btn-submit-edit").hidden = isExpertCase;
+
+  const disBox = document.getElementById("f-disagreement");
+  if (isExpertCase && current.reviews && current.reviews.length) {
+    disBox.hidden = false;
+    disBox.innerHTML = "<b>Reviewers disagreed — what they each submitted:</b>" +
+      current.reviews.map(r =>
+        `<div class="dis-row"><span class="dis-label">${esc(r.reviewer_name)} (${esc(r.role)})</span>${esc(r.submitted_text)}</div>`
+      ).join("");
+  } else {
+    disBox.hidden = true;
+  }
+  document.getElementById("review-card").hidden = false;
+  document.getElementById("f-text").focus();
+}
+
+async function submit(text, isExpert) {
+  if (!text.trim()) { toast("Text can't be empty"); return; }
+  const r = await fetch("/api/review", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      snippet_id: current.id, reviewer: reviewerName(), text, is_expert: isExpert,
+    }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast(err.detail || "Something went wrong");
+    return;
+  }
+  const { status } = await r.json();
+  toast(`Saved — ${status.replaceAll("_", " ")}`);
+  refreshStats();
+  loadNext();
+}
+
+document.getElementById("btn-looks-good").onclick = () => {
+  const shown = current.status === "awaiting_second_review" ? current.refined_text : (current.final_text || current.refined_text);
+  submit(shown, false);
+};
+document.getElementById("btn-submit-edit").onclick = () => submit(document.getElementById("f-text").value, false);
+document.getElementById("btn-expert").onclick = () => submit(document.getElementById("f-text").value, true);
+
+document.getElementById("name-submit").onclick = () => {
+  const v = document.getElementById("name-input").value.trim();
+  if (!v) return;
+  localStorage.setItem(STORAGE_KEY, v);
+  hideNameOverlay();
+  renderBadge();
+  refreshStats();
+  loadNext();
+};
+document.getElementById("name-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("name-submit").click();
+});
+
+renderBadge();
+if (reviewerName()) {
+  refreshStats();
+  loadNext();
+} else {
+  showNameOverlay();
+}
+</script>
+</body>
+</html>
