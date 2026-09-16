@@ -91,11 +91,12 @@ def open_corrections_db(db_path: Path) -> sqlite3.Connection:
             model TEXT NOT NULL,
             source TEXT NOT NULL DEFAULT 'llm',
             reviewers TEXT,
+            image_patch_path TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         )
         """
     )
-    # Migration for corrections.db files created before source/reviewers
+    # Migration for corrections.db files created before these columns
     # existed (CREATE TABLE IF NOT EXISTS doesn't add columns to an
     # already-existing table).
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(corrections)")}
@@ -103,6 +104,8 @@ def open_corrections_db(db_path: Path) -> sqlite3.Connection:
         conn.execute("ALTER TABLE corrections ADD COLUMN source TEXT NOT NULL DEFAULT 'llm'")
     if "reviewers" not in existing_cols:
         conn.execute("ALTER TABLE corrections ADD COLUMN reviewers TEXT")
+    if "image_patch_path" not in existing_cols:
+        conn.execute("ALTER TABLE corrections ADD COLUMN image_patch_path TEXT")
     conn.commit()
     return conn
 
@@ -111,8 +114,8 @@ def log_correction(conn: sqlite3.Connection, record: dict, refined_text: str, mo
     conn.execute(
         """
         INSERT INTO corrections
-            (book_id, page_number, side, paragraph_sequence, easyocr_text, tesseract_text, surya_text, refined_text, model, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'llm')
+            (book_id, page_number, side, paragraph_sequence, easyocr_text, tesseract_text, surya_text, refined_text, model, source, image_patch_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'llm', ?)
         """,
         (
             record["book_id"],
@@ -124,6 +127,7 @@ def log_correction(conn: sqlite3.Connection, record: dict, refined_text: str, mo
             record["surya"]["text"],
             refined_text,
             model,
+            record.get("image_patch_path"),
         ),
     )
     conn.commit()
@@ -141,15 +145,17 @@ def log_human_correction(
     surya_text: str,
     final_text: str,
     reviewers: list[str],
+    image_patch_path: str,
 ) -> None:
     """Logs a Phase 2 human-finalized decision (confirmed / provisionally
     verified / expert-approved) as ground truth in the same dictionary the
-    LLM refiner writes to."""
+    LLM refiner writes to. image_patch_path is what Phase 3's export script
+    pairs this correction's text with — see active_learning.py."""
     conn.execute(
         """
         INSERT INTO corrections
-            (book_id, page_number, side, paragraph_sequence, easyocr_text, tesseract_text, surya_text, refined_text, model, source, reviewers)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'human', ?)
+            (book_id, page_number, side, paragraph_sequence, easyocr_text, tesseract_text, surya_text, refined_text, model, source, reviewers, image_patch_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'human', ?, ?)
         """,
         (
             book_id,
@@ -162,6 +168,7 @@ def log_human_correction(
             final_text,
             "human-review",
             ",".join(reviewers),
+            image_patch_path,
         ),
     )
     conn.commit()

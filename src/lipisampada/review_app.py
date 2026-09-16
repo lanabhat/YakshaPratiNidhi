@@ -107,6 +107,7 @@ def post_review(submission: ReviewSubmission):
                     surya_text=row["surya_text"],
                     final_text=row["final_text"],
                     reviewers=reviewers,
+                    image_patch_path=row["image_path"],
                 )
     except ValueError as e:
         raise HTTPException(409, str(e))

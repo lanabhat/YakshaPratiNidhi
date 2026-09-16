@@ -153,10 +153,53 @@ expert_approved), that decision is also logged into the same run's
 pipeline" above. `GET /api/stats` gives a quick progress readout
 without opening the browser.
 
+## Running the Phase 3 active learning tooling
+
+`active_learning.py` aggregates every `source='human'` row (real
+human-verified ground truth — `source='llm'` rows are excluded, since
+fine-tuning on the LLM's own unverified guesses would just teach the
+engine to repeat whatever it didn't catch) across every run's
+`corrections.db`, checks whether the ~1,000-correction retraining
+trigger from the original brief has been hit, and can export or stage
+that data. It does not run a real fine-tune itself — see below.
+
+```
+.\run_active_learning.ps1                                          # just the trigger check
+.\run_active_learning.ps1 --export-jsonl corrections_export.jsonl   # {original_ocr, human_correction, image_patch_path} pairs
+.\run_active_learning.ps1 --prepare-tesstrain tesstrain_data        # image + .gt.txt pairs, ready for tesstrain
+```
+
+**Fine-tuning target: Tesseract**, via
+[tesstrain](https://github.com/tesseract-ocr/tesstrain) — chosen over
+EasyOCR/Surya because it has a documented, free/open fine-tuning
+workflow and was our most accurate baseline engine. `--prepare-tesstrain`
+stages `<name>.png` + `<name>.gt.txt` pairs in the layout tesstrain's
+`data/<lang>-ground-truth/` expects; from there, fine-tuning is:
+```
+git clone https://github.com/tesseract-ocr/tesstrain
+# copy the staged pairs into tesstrain/data/kan-ground-truth/
+cd tesstrain
+make training MODEL_NAME=kan_lipisampada START_MODEL=kan TESSDATA=<path to this project's tessdata/>
+```
+This needs Tesseract's training tools (`lstmtraining`,
+`combine_lang_model`, ...), which the `tesseract-ocr.tesseract` winget
+package used above does **not** include — expect to build them from
+source or find a training-tools-inclusive distribution; not set up as
+part of this project since there's not yet enough real correction data
+to make running it worthwhile (see below).
+
+At this project's actual data volume — a handful of real corrections
+from testing Phase 2, not real review throughput — the retraining
+trigger won't be anywhere near ready, and `--prepare-tesstrain` will
+say so rather than pretending a few dozen pairs are enough to fine-tune
+on meaningfully.
+
 ## Roadmap
 
 Phase 0 (layout slicer + 3-engine OCR ensemble), Phase 1 (LLM refiner +
-correction log), and Phase 2 (human review app with two-reviewer
-consensus, feeding finalized decisions back into the correction log)
-are built. Still ahead: Phase 3 (active learning / OCR fine-tuning loop
-once ~1,000 corrections are collected).
+correction log), Phase 2 (human review app with two-reviewer consensus,
+feeding finalized decisions back into the correction log), and the
+tooling half of Phase 3 (retraining trigger, JSON-pair export, tesstrain
+data staging) are built. Still ahead: actually running a fine-tune, once
+real review throughput accumulates enough `source='human'` corrections
+to make it worthwhile.
