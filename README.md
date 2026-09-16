@@ -117,9 +117,12 @@ consensus check. Fully local, no paid services.
   - `result.json` — per-paragraph engine outputs, ensemble flags
     (disagreement/low-confidence/majority-agreement/surya-suspect), and the
     LLM-refined text
-  - `corrections.db` — SQLite log of every LLM refinement (the seed of the
-    "self-correction dictionary" from the original brief; word-level
-    frequency mining off this table is a follow-up increment, not built yet)
+  - `corrections.db` — SQLite log of every LLM refinement (`source='llm'`)
+    and, once the review app runs against this folder, every human-
+    finalized decision too (`source='human'`, with the deciding
+    reviewer(s) attributed) — this is the "self-correction dictionary"
+    from the original brief; word-level frequency mining off this table
+    is a follow-up increment, not built yet
   - `report.html` — open this in a browser to visually compare each
     snippet's four candidates against the source image; flagged rows are
     highlighted.
@@ -143,14 +146,17 @@ $env:LIPISAMPADA_RUN_DIR = "output\poc_5pages_refined"   # or any run with a res
 
 Then open `http://127.0.0.1:8000`. On first launch it seeds a
 `review.db` (SQLite, per run directory) from that run's `result.json`;
-re-running is safe, existing rows aren't touched. `GET /api/stats` gives
-a quick progress readout without opening the browser.
+re-running is safe, existing rows aren't touched. Every time a snippet
+reaches a terminal status (confirmed / provisionally_verified /
+expert_approved), that decision is also logged into the same run's
+`corrections.db` as a `source='human'` row — see "Running the
+pipeline" above. `GET /api/stats` gives a quick progress readout
+without opening the browser.
 
 ## Roadmap
 
 Phase 0 (layout slicer + 3-engine OCR ensemble), Phase 1 (LLM refiner +
-correction log), and a first pass of Phase 2 (human review app with
-two-reviewer consensus) are built. Still ahead: wiring the review app's
-`final_text` decisions back into the correction log/self-correction
-dictionary, and Phase 3 (active learning / OCR fine-tuning loop once
-~1,000 corrections are collected).
+correction log), and Phase 2 (human review app with two-reviewer
+consensus, feeding finalized decisions back into the correction log)
+are built. Still ahead: Phase 3 (active learning / OCR fine-tuning loop
+once ~1,000 corrections are collected).

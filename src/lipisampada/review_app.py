@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from lipisampada import review_db
+from lipisampada import refiner, review_db
 
 # FastAPI runs sync endpoints in a threadpool, so two requests (e.g. two
 # reviewers submitting at once) could otherwise race on the same
@@ -41,6 +41,12 @@ app.mount("/images", StaticFiles(directory=RUN_DIR), name="images")
 
 _conn = review_db.open_review_db(RUN_DIR / "review.db")
 review_db.seed_from_result_json(_conn, RUN_DIR / "result.json")
+
+# Same corrections.db the pipeline's LLM refiner writes to (created fresh
+# here if the run was done with --no-refine) — finalized human decisions
+# get logged into it below, so it stays the one self-correction dictionary
+# for a run regardless of which phase produced each entry.
+_corrections_conn = refiner.open_corrections_db(RUN_DIR / "corrections.db")
 
 
 class ReviewSubmission(BaseModel):
@@ -87,6 +93,21 @@ def post_review(submission: ReviewSubmission):
             new_status = review_db.submit_review(
                 _conn, submission.snippet_id, submission.reviewer.strip(), submission.text, submission.is_expert
             )
+            if new_status in review_db.TERMINAL_STATUSES:
+                row = _conn.execute("SELECT * FROM snippets WHERE id = ?", (submission.snippet_id,)).fetchone()
+                reviewers = sorted({r["reviewer_name"] for r in review_db.reviews_for(_conn, submission.snippet_id)})
+                refiner.log_human_correction(
+                    _corrections_conn,
+                    book_id=row["book_id"],
+                    page_number=row["page_number"],
+                    side=row["side"],
+                    paragraph_sequence=row["paragraph_sequence"],
+                    easyocr_text=row["easyocr_text"],
+                    tesseract_text=row["tesseract_text"],
+                    surya_text=row["surya_text"],
+                    final_text=row["final_text"],
+                    reviewers=reviewers,
+                )
     except ValueError as e:
         raise HTTPException(409, str(e))
     return {"status": new_status}

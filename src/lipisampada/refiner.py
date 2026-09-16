@@ -63,11 +63,19 @@ def refine(easy_text: str, tess_text: str, surya_text: str, flags: dict, model: 
 
 
 def open_corrections_db(db_path: Path) -> sqlite3.Connection:
-    """Self-correction dictionary: every LLM refinement, logged per snippet.
-    Seed of the "gold standard" store described in the original brief —
-    word-level frequency mining off this table is a follow-up increment,
-    not built here."""
-    conn = sqlite3.connect(db_path)
+    """Self-correction dictionary: every LLM refinement and every
+    human-finalized review decision, logged per snippet. Seed of the "gold
+    standard" store described in the original brief — word-level frequency
+    mining off this table is a follow-up increment, not built here.
+
+    `source` distinguishes an LLM draft (logged by pipeline.py at OCR time)
+    from a human-confirmed decision (logged by review_app.py once the
+    Phase 2 consensus flow reaches a terminal status) — the same snippet
+    can have both rows, and the human one is the actual ground truth."""
+    # check_same_thread=False: review_app.py shares one connection across
+    # FastAPI's threadpool (same reasoning as review_db.open_review_db);
+    # harmless for pipeline.py's single-threaded use of this function.
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS corrections (
@@ -81,10 +89,20 @@ def open_corrections_db(db_path: Path) -> sqlite3.Connection:
             surya_text TEXT,
             refined_text TEXT,
             model TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'llm',
+            reviewers TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         )
         """
     )
+    # Migration for corrections.db files created before source/reviewers
+    # existed (CREATE TABLE IF NOT EXISTS doesn't add columns to an
+    # already-existing table).
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(corrections)")}
+    if "source" not in existing_cols:
+        conn.execute("ALTER TABLE corrections ADD COLUMN source TEXT NOT NULL DEFAULT 'llm'")
+    if "reviewers" not in existing_cols:
+        conn.execute("ALTER TABLE corrections ADD COLUMN reviewers TEXT")
     conn.commit()
     return conn
 
@@ -93,8 +111,8 @@ def log_correction(conn: sqlite3.Connection, record: dict, refined_text: str, mo
     conn.execute(
         """
         INSERT INTO corrections
-            (book_id, page_number, side, paragraph_sequence, easyocr_text, tesseract_text, surya_text, refined_text, model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (book_id, page_number, side, paragraph_sequence, easyocr_text, tesseract_text, surya_text, refined_text, model, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'llm')
         """,
         (
             record["book_id"],
@@ -106,6 +124,44 @@ def log_correction(conn: sqlite3.Connection, record: dict, refined_text: str, mo
             record["surya"]["text"],
             refined_text,
             model,
+        ),
+    )
+    conn.commit()
+
+
+def log_human_correction(
+    conn: sqlite3.Connection,
+    *,
+    book_id: str,
+    page_number: int,
+    side: str,
+    paragraph_sequence: int,
+    easyocr_text: str,
+    tesseract_text: str,
+    surya_text: str,
+    final_text: str,
+    reviewers: list[str],
+) -> None:
+    """Logs a Phase 2 human-finalized decision (confirmed / provisionally
+    verified / expert-approved) as ground truth in the same dictionary the
+    LLM refiner writes to."""
+    conn.execute(
+        """
+        INSERT INTO corrections
+            (book_id, page_number, side, paragraph_sequence, easyocr_text, tesseract_text, surya_text, refined_text, model, source, reviewers)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'human', ?)
+        """,
+        (
+            book_id,
+            page_number,
+            side,
+            paragraph_sequence,
+            easyocr_text,
+            tesseract_text,
+            surya_text,
+            final_text,
+            "human-review",
+            ",".join(reviewers),
         ),
     )
     conn.commit()
