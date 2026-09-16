@@ -140,8 +140,7 @@ anyone can act as the "expert" on a flagged snippet; fine for a small
 trusted group, worth revisiting before opening this to the wider public.
 
 ```
-$env:LIPISAMPADA_RUN_DIR = "output\poc_5pages_refined"   # or any run with a result.json
-.venv\Scripts\python -m uvicorn lipisampada.review_app:app --reload
+.\run_review.ps1 output\poc_5pages_refined   # or any other run with a result.json; omit to use the newest run
 ```
 
 Then open `http://127.0.0.1:8000`. On first launch it seeds a
