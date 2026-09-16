@@ -25,10 +25,27 @@ consensus check. Fully local, no paid services.
    .venv\Scripts\pip install --force-reinstall --no-deps opencv-python==5.0.0.93
    ```
 
-2. **Tesseract OCR engine** — this is a system binary, not a pip package.
+2. **GPU-enabled EasyOCR (optional)** — `pip install easyocr` pulls in a
+   CPU-only `torch` by default. `ocr_engines.py` auto-detects
+   `torch.cuda.is_available()` and falls back to CPU automatically, so this
+   step is purely a speedup, not required — skip it on a machine without an
+   NVIDIA GPU. To enable it, install a CUDA build matching both your
+   driver's CUDA version (`nvidia-smi` shows it top-right) and the `torch`
+   version already pinned by the other deps (currently `2.14.0`); this
+   machine has driver CUDA 13.2, so:
+   ```
+   .venv\Scripts\pip install --index-url https://download.pytorch.org/whl/cu132 torch==2.14.0+cu132 torchvision==0.29.0+cu132
+   ```
+   Find the right `cuXXX` tag for a different `torch`/driver combination by
+   browsing `https://download.pytorch.org/whl/torch/` and
+   `.../torchvision/` for your versions. This doesn't affect Surya or
+   Ollama — they already use the GPU independently of this Python `torch`
+   install (see step 4).
+
+3. **Tesseract OCR engine** — this is a system binary, not a pip package.
    Install it (Windows): `winget install --id tesseract-ocr.tesseract`.
 
-3. **Kannada language data** — Tesseract's Windows installer doesn't bundle
+4. **Kannada language data** — Tesseract's Windows installer doesn't bundle
    the `kan` language pack, and this project doesn't have admin rights to
    write into `Program Files\Tesseract-OCR\tessdata`. Instead, `kan.traineddata`
    and `eng.traineddata` are downloaded into a project-local `tessdata/`
@@ -40,7 +57,7 @@ consensus check. Fully local, no paid services.
    `ocr_engines.py` points Tesseract at this folder automatically via
    `TESSDATA_PREFIX` / `--tessdata-dir`.
 
-4. **Surya's llama-server binary** — Surya's current release is a VLM OCR
+5. **Surya's llama-server binary** — Surya's current release is a VLM OCR
    whose llama.cpp backend spawns a standalone `llama-server` binary (not
    the `llama-cpp-python` pip package, which isn't used). A CUDA build is
    downloaded (no compiler needed) into a project-local `tools/llamacpp_cuda/`
@@ -67,7 +84,7 @@ consensus check. Fully local, no paid services.
    failures turned out to be deterministic per crop, and one pathological
    snippet burned 10+ minutes trying to retry its way to a clean result).
 
-5. **Ollama, for the Phase 1 AI refiner** — install from
+6. **Ollama, for the Phase 1 AI refiner** — install from
    [ollama.com](https://ollama.com) or `winget install --id Ollama.Ollama`,
    then pull the model used here:
    ```

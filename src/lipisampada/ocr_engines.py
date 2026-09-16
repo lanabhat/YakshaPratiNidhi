@@ -58,8 +58,12 @@ def _get_easyocr_reader():
     global _easyocr_reader
     if _easyocr_reader is None:
         import easyocr
+        import torch
 
-        _easyocr_reader = easyocr.Reader(["kn", "en"], gpu=False)
+        # Auto-detect rather than hardcode: this is a community project and
+        # not every contributor's machine will have a CUDA-enabled torch
+        # build (or a GPU at all) — fall back to CPU instead of erroring.
+        _easyocr_reader = easyocr.Reader(["kn", "en"], gpu=torch.cuda.is_available())
     return _easyocr_reader
 
 
