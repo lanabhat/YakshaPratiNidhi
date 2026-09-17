@@ -22,18 +22,68 @@ Reading A (EasyOCR): {easy}
 Reading B (Tesseract): {tess}
 Reading C (Surya): {surya}
 {hint}
-Task: produce the single best-corrected Kannada Unicode text for this line, using your knowledge of Kannada vocabulary, grammar, and Yakshagana poetic conventions (meter/raga names like ವಾರ್ಧಿಕ, ಸೌರಾಷ್ಟ್ರ, ಭಾವಿನಿ, verse-end markers ॥ with Kannada numerals). Prefer whichever reading (or combination of fragments across readings) is most linguistically plausible. Do not invent content not suggested by at least one reading. Normalize OCR-mangled verse-end markers (I, II, Il, digits, or | standing in for ॥) to proper ॥ marks with Kannada numerals when the pattern is clear, while preserving single । marks already present at line breaks within a verse.
+Task: produce the single best-corrected Kannada Unicode text for this line, using your knowledge of Kannada vocabulary, grammar, and Yakshagana poetic conventions (meter/raga names like ವಾರ್ಧಿಕ, ಸೌರಾಷ್ಟ್ರ, ಭಾವಿನಿ, verse-end markers ॥ with Kannada numerals). Prefer whichever reading (or combination of fragments across readings) is most linguistically plausible. Do not invent content not suggested by at least one reading.
+
+Be conservative: your job is to pick the correct reading among what's already there, not to rewrite freely. If you are not confident a word is wrong, leave it as most readings have it. Do not "fix" a word into a different valid word just because it looks slightly more natural — an unnecessary change is as bad as leaving a real error uncorrected.
+
+Punctuation: keep every existing ।/॥ danda mark unless you are certain it is a stray OCR artifact — when in doubt, keep it rather than remove it. Only normalize OCR-mangled verse-end markers (I, II, Il, digits, or | standing in for ॥) into proper ॥ marks with Kannada numerals when the Latin-substitute pattern is clear; do not touch danda marks that are already correct.
 
 Respond with ONLY the corrected Kannada text on a single line, nothing else — no explanation, no quotes."""
 
 
-def _build_hint(flags: dict) -> str:
+def _consensus_words(easy_text: str, tess_text: str, surya_text: str) -> list[str]:
+    """Words appearing identically in at least 2 of the 3 readings.
+
+    A bag-of-words intersection, not positional alignment — the three
+    engines segment/space text differently, so lining up word *positions*
+    across all three isn't reliable, but a word occurring verbatim in two
+    independent readings is still strong evidence it's correct regardless
+    of where in the line it falls. This exists because the whole-line
+    majority_agreement flag (ensemble.py) requires the *entire* snippet to
+    match byte-for-byte, which real sentences essentially never do (one
+    stray character anywhere breaks it) — so on any snippet longer than a
+    couple of words, the refiner previously got no consensus signal at
+    all and would "correct" words every engine actually agreed on."""
+    from collections import Counter
+
+    counts = Counter()
+    for text in (easy_text, tess_text, surya_text):
+        if text:
+            counts.update(set(text.split()))
+    return sorted(w for w, c in counts.items() if c >= 2)
+
+
+def _danda_floor(easy_text: str, tess_text: str, surya_text: str) -> dict:
+    """Max count of each danda mark across the 3 readings — OCR engines
+    more often miss a danda than hallucinate one, so if any single reading
+    saw N of a mark, the corrected text should too."""
+    floor = {}
+    for mark in ("।", "॥"):
+        floor[mark] = max((text or "").count(mark) for text in (easy_text, tess_text, surya_text))
+    return {mark: n for mark, n in floor.items() if n > 0}
+
+
+def _build_hint(easy_text: str, tess_text: str, surya_text: str, flags: dict) -> str:
     lines = []
     if flags.get("majority_agreement"):
         lines.append(
             "Note: at least two of the three readings above already agree exactly on this "
             "text. Treat that agreement as strong evidence it's correct — only deviate from "
             "it if it is clearly not a valid Kannada word or phrase."
+        )
+    consensus = _consensus_words(easy_text, tess_text, surya_text)
+    if consensus:
+        lines.append(
+            "Note: these individual words appear identically in at least two of the three "
+            "readings and should be treated as verified correct — do not change them: "
+            + ", ".join(consensus)
+        )
+    floor = _danda_floor(easy_text, tess_text, surya_text)
+    if floor:
+        parts = [f"at least {n} '{mark}'" for mark, n in floor.items()]
+        lines.append(
+            "Note: the readings contain " + " and ".join(parts) + " mark(s) between them — "
+            "your corrected output should contain at least that many, not fewer."
         )
     if flags.get("surya_suspect"):
         lines.append(
@@ -49,7 +99,7 @@ def refine(easy_text: str, tess_text: str, surya_text: str, flags: dict, model: 
         easy=easy_text or "(empty)",
         tess=tess_text or "(empty)",
         surya=surya_text or "(empty)",
-        hint=_build_hint(flags),
+        hint=_build_hint(easy_text, tess_text, surya_text, flags),
     )
     body = json.dumps(
         {"model": model, "prompt": prompt, "stream": False, "options": {"temperature": 0.1}}

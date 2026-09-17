@@ -96,10 +96,28 @@ consensus check. Fully local, no paid services.
    Llama3.1:8b was tested as an alternative and rejected: it was better at
    respecting the majority-agreement hint but worse at normalizing OCR-mangled
    verse markers and once kept a Surya hallucination the refiner should have
-   discarded. Qwen isn't perfect either — the refiner has been seen to
-   introduce a new error on a snippet none of the three engines got wrong on
-   ("ತುಂಟತನ" → "ತುಂಡತನ"), a reminder that its output is a strong draft for
-   Phase 2 human review, not ground truth.
+   discarded. Qwen isn't perfect either — the refiner was once seen
+   introducing a new error on a snippet none of the three engines got wrong
+   on ("ತುಂಟತನ" → "ತುಂಡತನ"). Root cause: `ensemble.py`'s `majority_agreement`
+   flag requires the *entire* snippet's text to match byte-for-byte between
+   engines, which real sentences essentially never do (one stray character
+   anywhere breaks it), so on anything longer than a couple of words the
+   refiner got no consensus signal at all. Fixed by adding a bag-of-words
+   consensus check (`refiner._consensus_words`) that catches word-level
+   agreement independent of the rest of the line, plus a danda-mark count
+   floor (`refiner._danda_floor`) and stronger prompt wording against
+   unnecessary "corrections" and punctuation loss — see that module for
+   both.
+
+   This isn't a complete fix, and isn't meant to be: the danda-mark floor
+   is an aggregate count, not a positional guarantee, so a specific mark
+   can still occasionally get dropped while the line's total count still
+   passes; and on short snippets the LLM has been seen overriding an
+   explicit "don't change this" instruction on genuinely ambiguous cases
+   (two valid word forms, like ವಾರ್ಧಿಕ/ವಾರ್ಧಿಕೆ). Both are exactly the kind
+   of thing the raw-engine-readings panel in Phase 2 review surfaces in
+   seconds — this refiner is a draft-quality first pass, not a
+   ground-truth guarantee, by design.
 
 ## Running the pipeline
 
