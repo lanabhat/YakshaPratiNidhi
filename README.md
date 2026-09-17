@@ -132,6 +132,9 @@ consensus check. Fully local, no paid services.
   running).
 - Output goes to `output/<timestamp>/`:
   - `snippets/` — cropped paragraph images
+  - `pages/` — one full-page image per page (the un-cropped `gray` preprocessed
+    page), so the review app can show a reviewer the surrounding context —
+    e.g. a continuing verse/song — that a tightly-cropped snippet alone loses
   - `result.json` — per-paragraph engine outputs, ensemble flags
     (disagreement/low-confidence/majority-agreement/surya-suspect), and the
     LLM-refined text
@@ -156,6 +159,10 @@ flagged `needs_expert` for a final, authoritative resolution. There's no
 login — reviewers just type a name once (stored in the browser) — so
 anyone can act as the "expert" on a flagged snippet; fine for a small
 trusted group, worth revisiting before opening this to the wider public.
+Clicking a snippet's image (or the "View full page" button) opens the full
+page it came from, with the current snippet highlighted — the highlight is
+an orientation aid, not pixel-exact (it's drawn from `bbox`, captured
+*before* `layout.trim_to_ink()`'s further reframing).
 
 ```
 .\run_review.ps1 output\poc_5pages_refined   # or any other run with a result.json; omit to use the newest run

@@ -48,6 +48,8 @@ def open_review_db(db_path: Path) -> sqlite3.Connection:
             side TEXT NOT NULL,
             paragraph_sequence INTEGER NOT NULL,
             image_path TEXT NOT NULL,
+            page_image_path TEXT,
+            bbox TEXT,
             easyocr_text TEXT,
             tesseract_text TEXT,
             surya_text TEXT,
@@ -60,6 +62,14 @@ def open_review_db(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
+    # Migration for review.db files created before page_image_path/bbox
+    # existed (CREATE TABLE IF NOT EXISTS doesn't add columns to an
+    # already-existing table) — same pattern as refiner.open_corrections_db.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(snippets)")}
+    if "page_image_path" not in existing_cols:
+        conn.execute("ALTER TABLE snippets ADD COLUMN page_image_path TEXT")
+    if "bbox" not in existing_cols:
+        conn.execute("ALTER TABLE snippets ADD COLUMN bbox TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS reviews (
@@ -85,12 +95,18 @@ def seed_from_result_json(conn: sqlite3.Connection, result_json_path: Path) -> i
     inserted = 0
     for r in records:
         refined = r.get("refined", {}).get("text") or r["easyocr"]["text"]
+        # .get(): both fields postdate this project increment — older
+        # result.json files won't have them, and should seed as NULL
+        # rather than crash (the review app hides the "view full page"
+        # affordance when page_image_path is missing).
+        page_image_path = r.get("page_image_path")
+        bbox = json.dumps(r["bbox"]) if "bbox" in r else None
         cur = conn.execute(
             """
             INSERT OR IGNORE INTO snippets
-                (id, book_id, page_number, side, paragraph_sequence, image_path,
+                (id, book_id, page_number, side, paragraph_sequence, image_path, page_image_path, bbox,
                  easyocr_text, tesseract_text, surya_text, refined_text, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 _snippet_id(r),
@@ -99,6 +115,8 @@ def seed_from_result_json(conn: sqlite3.Connection, result_json_path: Path) -> i
                 r["side"],
                 r["paragraph_sequence"],
                 r["image_patch_path"],
+                page_image_path,
+                bbox,
                 r["easyocr"]["text"],
                 r["tesseract"]["text"],
                 r["surya"]["text"],

@@ -19,6 +19,7 @@ from lipisampada.ocr_engines import run_easyocr, run_surya, run_tesseract
 def process_page(
     image_path: Path,
     snippets_dir: Path,
+    pages_dir: Path,
     book_id: str,
     refine: bool,
     corrections_db: sqlite3.Connection | None,
@@ -26,6 +27,13 @@ def process_page(
     meta = layout.parse_filename(image_path.name, book_id=book_id)
     gray, binary = preprocessing.preprocess_page(str(image_path))
     snippets = layout.slice_page(binary)
+
+    # One full-page reference image per page, so the review app can show a
+    # reviewer the surrounding context (e.g. a continuing verse/song) that a
+    # tightly-cropped snippet alone loses — see review_app.py/static/index.html.
+    page_image_name = f"{image_path.stem}.png"
+    cv2.imwrite(str(pages_dir / page_image_name), gray)
+    page_image_path = f"pages/{page_image_name}"
 
     records = []
     for snippet in snippets:
@@ -50,6 +58,7 @@ def process_page(
             "column_index": snippet.column_index,
             "bbox": list(snippet.bbox),
             "image_patch_path": f"snippets/{patch_name}",
+            "page_image_path": page_image_path,
             "easyocr": {"text": easy.text, "avg_confidence": round(easy.avg_confidence, 4)},
             "tesseract": {"text": tess.text, "avg_confidence": round(tess.avg_confidence, 4)},
             "surya": {"text": surya.text, "avg_confidence": round(surya.avg_confidence, 4)},
@@ -88,7 +97,9 @@ def main():
     run_id = args.output or f"output/{time.strftime('%Y%m%d_%H%M%S')}"
     run_dir = Path(run_id)
     snippets_dir = run_dir / "snippets"
+    pages_dir = run_dir / "pages"
     snippets_dir.mkdir(parents=True, exist_ok=True)
+    pages_dir.mkdir(parents=True, exist_ok=True)
 
     refine = not args.no_refine
     corrections_db = refiner.open_corrections_db(run_dir / "corrections.db") if refine else None
@@ -96,7 +107,7 @@ def main():
     all_records = []
     for i, image_path in enumerate(image_paths, 1):
         print(f"[{i}/{len(image_paths)}] Processing {image_path.name} ...")
-        records = process_page(image_path, snippets_dir, args.book_id, refine, corrections_db)
+        records = process_page(image_path, snippets_dir, pages_dir, args.book_id, refine, corrections_db)
         all_records.extend(records)
         print(f"  -> {len(records)} paragraph snippets")
 

@@ -7,6 +7,7 @@ Run against one pipeline output directory:
     to the newest folder under output/)
 """
 
+import json
 import os
 import threading
 from pathlib import Path
@@ -59,6 +60,8 @@ class ReviewSubmission(BaseModel):
 def _snippet_payload(row) -> dict:
     d = dict(row)
     d["image_url"] = f"/images/{d['image_path']}"
+    d["page_image_url"] = f"/images/{d['page_image_path']}" if d.get("page_image_path") else None
+    d["bbox"] = json.loads(d["bbox"]) if d.get("bbox") else None
     return d
 
 
