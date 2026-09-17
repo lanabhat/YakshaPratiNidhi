@@ -54,14 +54,32 @@
   .view-page-btn:hover { background: #1a1a1c; }
   .snippet-img-wrap img { cursor: zoom-in; }
 
-  #page-overlay .card { width: min(94vw, 900px); padding: 1rem; position: relative; }
-  #page-overlay .page-img-wrap { position: relative; max-height: 88vh; overflow: auto; background: #fff; border-radius: 6px; }
-  #page-overlay .page-img-wrap img { display: block; max-width: 100%; }
-  #page-highlight { position: absolute; border: 3px solid #e8524a; background: rgba(232, 82, 74, 0.18); pointer-events: none; }
-  #page-overlay-close {
-    position: absolute; top: -0.6rem; right: -0.6rem; width: 2rem; height: 2rem; border-radius: 50%;
-    background: #2a2a2d; color: #eee; border: 1px solid #444; cursor: pointer; font-size: 1rem; line-height: 1;
+  #page-panel {
+    position: fixed; top: 0; right: 0; height: 100vh; width: 0; overflow: hidden;
+    background: #1a1a1c; border-left: 1px solid #2a2a2c; box-shadow: -4px 0 16px rgba(0,0,0,0.4);
+    transition: width 0.22s ease; z-index: 20; display: flex; flex-direction: column;
   }
+  #page-panel.expanded { width: min(50vw, 680px); }
+  #page-panel-header {
+    display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+    padding: 0.7rem 1rem; border-bottom: 1px solid #2a2a2c;
+  }
+  #page-panel-header h3 { margin: 0; font-size: 0.85rem; color: #999; font-weight: 600; }
+  #page-panel-close { background: none; border: none; color: #999; cursor: pointer; font-size: 1.3rem; line-height: 1; padding: 0.1rem 0.4rem; }
+  #page-panel-close:hover { color: #eee; }
+  #page-panel-body { flex: 1; overflow: auto; background: #fff; padding: 0.75rem; }
+  .page-img-wrap { position: relative; }
+  .page-img-wrap img { display: block; max-width: 100%; }
+  #page-highlight { position: absolute; border: 3px solid #e8524a; background: rgba(232, 82, 74, 0.18); pointer-events: none; }
+
+  #page-panel-tab {
+    position: fixed; top: 50%; right: 0; transform: translateY(-50%); z-index: 19;
+    background: #2a2a2d; color: #7ab8ff; border: 1px solid #333; border-right: none;
+    border-radius: 8px 0 0 8px; padding: 0.7rem 0.35rem; cursor: pointer;
+    writing-mode: vertical-rl; font-size: 0.78rem; letter-spacing: 0.02em;
+  }
+  #page-panel-tab:hover { background: #1a1a1c; }
+  #page-panel-tab[hidden] { display: none; }
   #f-disagreement { background: #241a12; border: 1px solid #4a3520; border-radius: 8px; padding: 0.7rem 0.9rem; margin-bottom: 0.8rem; font-size: 0.9rem; }
   #f-disagreement .dis-row { margin: 0.3rem 0; }
   #f-disagreement .dis-label { color: #e0a955; font-size: 0.75rem; display: block; }
@@ -123,9 +141,13 @@
 
 <div id="toast"></div>
 
-<div class="overlay" id="page-overlay" hidden>
-  <div class="card">
-    <button id="page-overlay-close" aria-label="Close">&times;</button>
+<button id="page-panel-tab" hidden>▸ Full page</button>
+<div id="page-panel">
+  <div id="page-panel-header">
+    <h3>Full page</h3>
+    <button id="page-panel-close" aria-label="Close">&times;</button>
+  </div>
+  <div id="page-panel-body">
     <div class="page-img-wrap">
       <img id="page-img" alt="full page">
       <div id="page-highlight" hidden></div>
@@ -214,6 +236,11 @@ async function loadNext() {
   pill.className = "status-pill " + current.status;
 
   document.getElementById("btn-view-page").hidden = !current.page_image_url;
+  const panelExpanded = document.getElementById("page-panel").classList.contains("expanded");
+  document.getElementById("page-panel-tab").hidden = !current.page_image_url || panelExpanded;
+  if (panelExpanded) {
+    renderPageView(); // keep an already-open panel in sync with the new snippet
+  }
 
   const isExpertCase = current.status === "needs_expert";
   document.getElementById("btn-expert").hidden = !isExpertCase;
@@ -254,9 +281,8 @@ async function submit(text, isExpert) {
   loadNext();
 }
 
-function openPageView() {
+function renderPageView() {
   if (!current || !current.page_image_url) return;
-  const overlay = document.getElementById("page-overlay");
   const img = document.getElementById("page-img");
   const highlight = document.getElementById("page-highlight");
   highlight.hidden = true;
@@ -271,17 +297,25 @@ function openPageView() {
     highlight.hidden = false;
   };
   img.src = current.page_image_url;
-  overlay.hidden = false;
+}
+function openPageView() {
+  if (!current || !current.page_image_url) return;
+  renderPageView();
+  document.getElementById("page-panel").classList.add("expanded");
+  document.getElementById("page-panel-tab").hidden = true; // the expanded panel occupies the same edge; avoid overlapping it
 }
 function closePageView() {
-  document.getElementById("page-overlay").hidden = true;
+  document.getElementById("page-panel").classList.remove("expanded");
+  document.getElementById("page-panel-tab").hidden = !current || !current.page_image_url;
+}
+function togglePageView() {
+  if (document.getElementById("page-panel").classList.contains("expanded")) closePageView();
+  else openPageView();
 }
 document.getElementById("btn-view-page").onclick = openPageView;
 document.getElementById("f-img").onclick = openPageView;
-document.getElementById("page-overlay-close").onclick = closePageView;
-document.getElementById("page-overlay").addEventListener("click", (e) => {
-  if (e.target.id === "page-overlay") closePageView();
-});
+document.getElementById("page-panel-tab").onclick = togglePageView;
+document.getElementById("page-panel-close").onclick = closePageView;
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closePageView();
 });
