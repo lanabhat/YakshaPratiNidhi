@@ -101,6 +101,7 @@ def run_book(
     progress=print,
     on_page=None,
     on_snippet=None,
+    on_page_error=None,
     resume: bool = False,
 ) -> Path:
     """Runs the full OCR+refine pipeline over one book's already-prepared
@@ -117,7 +118,12 @@ def run_book(
     snippet_total) after each snippet within a page - a page can have a
     dozen-plus snippets each taking real OCR+refine time, so page-level
     progress alone can look stalled for minutes with real work happening;
-    the intake queue app uses both for its UI.
+    the intake queue app uses both for its UI. on_page_error(image_path,
+    exception), if given, is called instead of (before) on_page whenever a
+    page's own OCR raises - the loop still keeps going to the next page (one
+    bad/corrupt page must not lose the rest of an unattended book), but the
+    caller needs to know a page was silently skipped rather than assuming
+    every page that ran actually produced a record.
 
     resume=True picks up an interrupted run: pages whose records are already
     in result.json (written after every page, so only whole pages are ever
@@ -164,6 +170,8 @@ def run_book(
                 # One unreadable/corrupt page must not lose every other
                 # page's work in an unattended queue run - skip it and keep going.
                 progress(f"  !! failed, skipping this page: {e}")
+                if on_page_error is not None:
+                    on_page_error(image_path, e)
             result_path.write_text(json.dumps(all_records, ensure_ascii=False, indent=2), encoding="utf-8")
             if on_page is not None:
                 on_page(i, len(image_paths), image_path)

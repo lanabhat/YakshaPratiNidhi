@@ -69,6 +69,53 @@ def test_ocr_stops_at_the_next_snippet_and_lands_in_paused(env, monkeypatch, tmp
     assert mod.qdb.get_item(mod._queue_conn, item)["status"] == "paused"
 
 
+def test_a_book_with_a_failed_page_is_marked_failed_not_done(env, monkeypatch, tmp_path):
+    """Regression: PRS00004 landed on STATUS_DONE with only 1 of 55 pages actually OCR'd, because a
+    per-page OCR failure was only ever printed, never surfaced to _run_ocr_locked."""
+    mod = env[0]
+    item, _, work = make_item(env, 1, "p_pagefail")
+    (work / "approved").mkdir()
+    cv2.imwrite(str(work / "approved" / "IMG_20260101_0001_P.tif"), np.full((50, 50, 3), 255, np.uint8))
+    set_status(env, item, "approved")
+    monkeypatch.setattr(mod, "OUTPUT_ROOT", tmp_path / "out")
+
+    def fake_run_book(paths, book_id, run_dir, refine, on_page, on_snippet, resume, on_page_error=None, **kw):
+        on_page_error(paths[0], RuntimeError("bad scan"))
+        on_page(1, 1, paths[0])
+
+    monkeypatch.setattr(mod.pipeline, "run_book", fake_run_book)
+    mod._run_ocr(mod.qdb.get_item(mod._queue_conn, item))
+    row = mod.qdb.get_item(mod._queue_conn, item)
+    assert row["status"] == "failed"
+    assert "1 of 1 page(s) failed OCR" in row["error"] and "bad scan" in row["error"]
+
+
+def test_a_book_with_no_failed_pages_still_lands_in_done(env, monkeypatch, tmp_path):
+    mod = env[0]
+    item, _, work = make_item(env, 1, "p_pageok")
+    (work / "approved").mkdir()
+    cv2.imwrite(str(work / "approved" / "IMG_20260101_0001_P.tif"), np.full((50, 50, 3), 255, np.uint8))
+    set_status(env, item, "approved")
+    monkeypatch.setattr(mod, "OUTPUT_ROOT", tmp_path / "out")
+    monkeypatch.setattr(mod.pipeline, "run_book", lambda *a, **kw: None)  # on_page_error never called
+    mod._run_ocr(mod.qdb.get_item(mod._queue_conn, item))
+    assert mod.qdb.get_item(mod._queue_conn, item)["status"] == "done"
+
+
+def test_retry_works_from_a_done_book_and_resumes_ocr(client, env):
+    item, pages, work = make_item(env, 1, "p_donefix")
+    env[0]._queue_conn.execute("UPDATE queue_pages SET approved=1 WHERE queue_item_id=?", (item,))
+    env[0]._queue_conn.commit()
+    set_status(env, item, "done")
+    assert client.post(f"/api/queue/{item}/retry").status_code == 200
+    assert status_of(client, item) == "approved"  # the worker re-runs OCR (resume=True keeps what succeeded)
+
+
+def test_retry_is_refused_from_statuses_other_than_failed_or_done(client, env):
+    item, _, _ = make_item(env, 1, "p_noretry")  # awaiting_review by default
+    assert client.post(f"/api/queue/{item}/retry").status_code == 409
+
+
 def _paused_book_with_ocr(env, tmp_path, name):
     mod = env[0]
     item, pages, work = make_item(env, 2, name)

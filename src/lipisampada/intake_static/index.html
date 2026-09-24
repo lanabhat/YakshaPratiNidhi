@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lipi-Sampada Intake</title>
+<title>Yaksha - PratiNidhi (ಯಕ್ಷ-ಪ್ರತಿ-ನಿಧಿ) Intake</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -203,7 +203,7 @@
 <body>
 
 <header>
-  <h1>Lipi-Sampada Intake</h1>
+  <h1>Yaksha - PratiNidhi (ಯಕ್ಷ-ಪ್ರತಿ-ನಿಧಿ) Intake</h1>
   <nav>
     <button id="nav-catalog" class="active">Catalog</button>
     <button id="nav-queue">Queue<span class="nav-badge" id="queue-badge" hidden></span></button>
@@ -554,6 +554,7 @@ async function loadQueue() {
         ${it.status === "paused" ? `<button class="btn btn-primary" data-resume="${it.id}">Resume OCR</button>` : ""}
         ${["ocr_running", "paused", "done", "failed"].includes(it.status) && it.run_dir ? `<button class="btn" data-progress="${it.id}">View progress / fix pages</button>` : ""}
         ${it.status === "failed" ? `<button class="btn" data-retry="${it.id}">Retry</button>` : ""}
+        ${it.status === "done" ? `<button class="btn" data-retry="${it.id}">Re-run OCR</button>` : ""}
         ${it.status === "done" ? publishButton("local", it) + " " + publishButton("web", it) : ""}
       </td>
     </tr>

@@ -90,7 +90,7 @@ def create_app(db_path: str | Path | None = None, local_storage_dir: str | Path 
     def index():
         # A browser pointed at the API root should learn what this is, not see a bare 404.
         return jsonify(
-            service="Lipi-Sampada review API",
+            service="Yaksha - PratiNidhi (ಯಕ್ಷ-ಪ್ರತಿ-ನಿಧಿ) review API",
             note="This is the API, not the website. Open the web app (run_web.ps1 -> http://127.0.0.1:8300).",
             try_these=["/api/health", "/api/library"],
         )

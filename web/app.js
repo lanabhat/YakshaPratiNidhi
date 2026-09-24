@@ -114,7 +114,7 @@ async function signIn() {
 /* ---------------- onboarding: shown once right after a brand-new sign-in ---------------- */
 function openOnboardingForm() {
   showModal(`
-    <h2>Welcome to Lipi-Sampada!</h2>
+    <h2>Welcome to Yaksha - PratiNidhi (ಯಕ್ಷ-ಪ್ರತಿ-ನಿಧಿ)!</h2>
     <p class="dim small">A couple of quick questions before you get started.</p>
     <div class="field"><label>Name</label><input type="text" id="ob-name" value="${esc((me && me.name) || "")}"></div>
     <div class="field"><label>Place</label><input type="text" id="ob-place" placeholder="City / town"></div>
@@ -362,6 +362,28 @@ function wireWordSuggestions(card, s, book) {
 }
 
 /* ---------------- snippet card ---------------- */
+// One line telling a reviewer/editor what, if anything, they should actually do with this snippet -
+// the amber styling flags *that* something needs eyes on it; this says *what*.
+function hintFor(s, t) {
+  if (s.finalized) {
+    if (!t.needs_attention) return "";
+    return isAdmin()
+      ? "<b>Challenged.</b> Reviewers disagree with this finalized text - Re-open it below to reconsider."
+      : "<b>Challenged.</b> Reviewers have suggested this finalized text may be wrong - an admin can re-open it.";
+  }
+  if (t.needs_attention) {
+    return isEditor()
+      ? "<b>Reviewers agree on a change.</b> Accept the highlighted word change below, or Approve as is / with your own edit."
+      : "<b>Reviewers agree on a change.</b> An editor will review and approve it soon.";
+  }
+  if (s.suggestion_count) {
+    return isEditor()
+      ? "<b>A suggestion is awaiting more input.</b> You can Accept a word change below, or Approve directly if you're confident."
+      : "<b>A suggestion is here.</b> Read it, then click \"Looks right\" if you agree, or suggest your own edit.";
+  }
+  return "";
+}
+
 function snipHtml(s, book) {
   const t = s.tally;
   const pills = [
@@ -369,6 +391,7 @@ function snipHtml(s, book) {
     t.needs_attention ? `<span class="pill attn">${s.finalized ? "challenged" : "needs attention"}</span>` : "",
     s.refine_failed ? '<span class="pill warn" title="the AI step timed out; this is the best non-AI reading">AI step skipped</span>' : "",
   ].join(" ");
+  const hint = hintFor(s, t);
   const chips = t.word_changes.map((g, i) => `
     <div class="chip"><span class="diff-old">${esc(g.original || "∅")}</span><span class="arrow">→</span><span class="diff-new">${esc(g.replacement || "(delete)")}</span>
       <span class="cnt ${g.count >= 2 ? "hot" : ""}" title="${esc(g.reviewers.map((r) => r.name + " (" + r.role + ")").join(", "))}">×${g.count}</span>
@@ -377,8 +400,10 @@ function snipHtml(s, book) {
     </div>`).join("");
   const votes = `<div class="votes">✓ ${t.confirms.reviewers} confirmed as-is${t.confirms.guests ? ` (+${t.confirms.guests} guest)` : ""} · ${t.edit_suggestions} suggested edit${t.edit_suggestions === 1 ? "" : "s"}${s.my_suggestion ? " · <b>you've weighed in</b>" : ""}</div>`;
   const mine = s.my_suggestion && s.my_suggestion.text ? s.my_suggestion.text : s.current_text;
-  return `<div class="snip ${s.finalized ? "final" : ""} ${t.needs_attention ? "attn" : ""}" data-id="${esc(s.id)}">
+  const flagged = t.needs_attention || (s.suggestion_count > 0 && !s.finalized);
+  return `<div class="snip ${s.finalized ? "final" : ""} ${flagged ? "attn" : ""}" data-id="${esc(s.id)}">
     <div class="snip-head"><b>#${s.seq + 1}</b>${pills}</div>
+    ${hint ? `<div class="hint">${hint}</div>` : ""}
     ${s.snippet_image_url ? `<div class="snip-img"><img src="${esc(s.snippet_image_url)}" loading="lazy" alt="snippet"></div>` : ""}
     <div class="text">${renderText(s)}</div>
     ${chips ? `<div class="chips">${chips}</div>` : ""}${votes}
@@ -526,7 +551,7 @@ async function readView(view, bookId, start) {
     <div class="toolbar"><a class="btn" href="${to(1)}">⏮ First</a><a class="btn" href="${to(start - COUNT)}">◀ Previous ${COUNT}</a>
       <a class="btn" href="${to(start + COUNT)}">Next ${COUNT} ▶</a><a class="btn" href="${to(N)}">Last ⏭</a>
       <input type="number" id="goto" min="1" max="${N}" placeholder="page #"><button class="btn" id="goto-btn">Go</button></div>
-    <div class="legend"><span><i style="background:#2f7d3f"></i>finalized</span><span><i style="background:#3b7fa8"></i>has reviewer input</span><span><i style="background:var(--amber)"></i>needs attention</span><span>click any paragraph to open it for review</span></div>
+    <div class="legend"><span><i style="background:#2f7d3f"></i>finalized</span><span><i style="background:var(--amber)"></i>has a suggestion - needs review</span><span>click any paragraph to open it for review</span></div>
     <div class="read">${data.pages.map((p) => `
       <div class="pagehead"><span>Page ${p.page_index}${pageLabel(p) !== String(p.page_index) ? ` (printed ${esc(pageLabel(p))})` : ""}</span><a href="#/book/${bookId}/page/${p.page_index}">open page →</a></div>
       ${p.snippets.map((s) => `<p class="${s.finalized ? "final" : ""} ${s.suggestion_count && !s.finalized ? "sug" : ""} ${s.attention ? "attn" : ""}" data-page="${p.page_index}" data-id="${esc(s.id)}">${esc(s.text)}</p>`).join("")}`).join("")}

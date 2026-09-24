@@ -176,4 +176,4 @@ def test_read_view_returns_consecutive_pages_with_status(seeded):
 
 def test_api_root_explains_itself_instead_of_404(client):
     r = client.get("/")
-    assert r.status_code == 200 and "Lipi-Sampada" in r.json["service"] and "/api/library" in r.json["try_these"]
+    assert r.status_code == 200 and "PratiNidhi" in r.json["service"] and "/api/library" in r.json["try_these"]

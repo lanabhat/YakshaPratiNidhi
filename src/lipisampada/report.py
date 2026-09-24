@@ -24,7 +24,7 @@ _PAGE_TEMPLATE = """<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>Lipi-Sampada OCR QA Report</title>
+<title>Yaksha - PratiNidhi (ಯಕ್ಷ-ಪ್ರತಿ-ನಿಧಿ) OCR QA Report</title>
 <style>
   body {{ font-family: sans-serif; background: #111; color: #eee; margin: 0; padding: 1.5rem; }}
   h1 {{ font-size: 1.1rem; color: #aaa; margin-bottom: 0.25rem; }}

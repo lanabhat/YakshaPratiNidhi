@@ -37,7 +37,7 @@ def _default_run_dir() -> Path:
 
 RUN_DIR = Path(os.environ["LIPISAMPADA_RUN_DIR"]) if "LIPISAMPADA_RUN_DIR" in os.environ else _default_run_dir()
 
-app = FastAPI(title="Lipi-Sampada Review")
+app = FastAPI(title="Yaksha - PratiNidhi (ಯಕ್ಷ-ಪ್ರತಿ-ನಿಧಿ) Review")
 app.mount("/images", StaticFiles(directory=RUN_DIR), name="images")
 
 _conn = review_db.open_review_db(RUN_DIR / "review.db")

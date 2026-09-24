@@ -46,7 +46,7 @@ OUTPUT_ROOT = PROJECT_ROOT / "output"
 if not CATALOG_DB_PATH.exists():
     raise RuntimeError(f"Catalog snapshot not found at {CATALOG_DB_PATH}")
 
-app = FastAPI(title="Lipi-Sampada Intake")
+app = FastAPI(title="Yaksha - PratiNidhi (ಯಕ್ಷ-ಪ್ರತಿ-ನಿಧಿ) Intake")
 
 _db_lock = threading.Lock()
 _queue_conn = qdb.open_queue_db(QUEUE_DB_PATH)
@@ -218,12 +218,16 @@ def enqueue_bulk(req: BulkEnqueueRequest):
 
 @app.post("/api/queue/{item_id}/retry")
 def retry_item(item_id: int):
+    """Also works from STATUS_DONE, not just STATUS_FAILED - a "done" book's pages are always all
+    approved already, so this re-queues it for OCR (resume=True skips whatever already succeeded).
+    Useful both as a manual "re-run OCR" safety valve and to recover a book that reached DONE despite
+    some pages having failed, from before per-page OCR failures were tracked (see _run_ocr_locked)."""
     with _db_lock:
         item = qdb.get_item(_queue_conn, item_id)
         if item is None:
             raise HTTPException(404, "no such queue item")
-        if item["status"] != qdb.STATUS_FAILED:
-            raise HTTPException(409, f"item is {item['status']}, not failed")
+        if item["status"] not in (qdb.STATUS_FAILED, qdb.STATUS_DONE):
+            raise HTTPException(409, f"item is {item['status']}, not failed or done")
         pages = qdb.list_pages(_queue_conn, item_id)
         if pages and all(p["approved"] for p in pages):
             # already through human review last time - just retry the OCR handoff
@@ -762,12 +766,24 @@ def _run_ocr_locked(item_id, item, approved_dir, run_dir):
             if item_id in _pause_requested:
                 raise OcrPaused()
 
+        page_failures = []  # (image_path, exception) - a page can fail without stopping the whole book
+
         # resume=True: a restart/reload/retry continues from the pages already
         # in result.json instead of redoing the whole book from page 1.
         pipeline.run_book(
             image_paths, item["book_id"], run_dir, refine=True, on_page=on_page, on_snippet=on_snippet,
-            resume=True,
+            on_page_error=lambda path, e: page_failures.append((path, e)), resume=True,
         )
+        if page_failures:
+            # NOT "done" - a book that silently lost most of its pages to per-page OCR errors must not
+            # look identical to one that actually finished. STATUS_FAILED (rather than a new status)
+            # reuses the existing Retry button/endpoint as-is: since every page here is already
+            # approved, retrying resumes OCR (resume=True skips whatever DID succeed, retries the rest).
+            first_name, first_err = page_failures[0][0].name, page_failures[0][1]
+            summary = f"{len(page_failures)} of {len(image_paths)} page(s) failed OCR (e.g. {first_name}: {first_err})"
+            with _db_lock:
+                qdb.set_status(_queue_conn, item_id, qdb.STATUS_FAILED, error=summary)
+            return
         with _db_lock:
             qdb.set_status(_queue_conn, item_id, qdb.STATUS_DONE)
     except OcrPaused:
