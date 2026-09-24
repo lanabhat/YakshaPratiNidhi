@@ -17,6 +17,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -239,7 +240,14 @@ def retry_item(item_id: int):
 @app.get("/api/queue")
 def get_queue():
     with _db_lock:
-        return {"items": [dict(r) for r in qdb.list_queue(_queue_conn)]}
+        items = [dict(r) for r in qdb.list_queue(_queue_conn)]
+    # what clicking Publish right now would target, per stage - may differ from an item's own
+    # local_publish_target/web_publish_target, which is where its *last* publish actually went.
+    return {
+        "items": items,
+        "configured_local_target": _configured_target("local"),
+        "configured_web_target": _configured_target("web"),
+    }
 
 
 @app.get("/api/queue/{item_id}")
@@ -483,15 +491,28 @@ def accept_auto(item_id: int):
     return {"approved": len(todo), "all_pages_approved": all_done or not todo}
 
 
-@app.post("/api/queue/{item_id}/publish")
-def republish(item_id: int):
+def _require_done_item(item_id: int):
+    item = qdb.get_item(_queue_conn, item_id)
+    if item is None:
+        raise HTTPException(404, "no such queue item")
+    if item["status"] != qdb.STATUS_DONE:
+        raise HTTPException(409, f"item is {item['status']}; only finished (done) books can be published")
+    return item
+
+
+@app.post("/api/queue/{item_id}/publish/local")
+def republish_local(item_id: int):
     with _db_lock:
-        item = qdb.get_item(_queue_conn, item_id)
-        if item is None:
-            raise HTTPException(404, "no such queue item")
-        if item["status"] != qdb.STATUS_DONE:
-            raise HTTPException(409, f"item is {item['status']}; only finished (done) books can be published")
-        qdb.set_publish(_queue_conn, item_id, None)  # the worker picks it up on its next tick
+        _require_done_item(item_id)
+        qdb.set_publish(_queue_conn, item_id, "local", None)  # the worker picks it up on its next tick
+    return {"ok": True}
+
+
+@app.post("/api/queue/{item_id}/publish/web")
+def republish_web(item_id: int):
+    with _db_lock:
+        _require_done_item(item_id)
+        qdb.set_publish(_queue_conn, item_id, "web", "requested")  # the worker picks it up on its next tick
     return {"ok": True}
 
 
@@ -555,9 +576,14 @@ def _reocr_worker(item, page, paths: list[Path]):
                     f.unlink()
             except Exception:
                 pass
-        if item["publish_status"] == "published":
-            with _db_lock:  # ingest is idempotent and never overwrites text a reviewer touched
-                qdb.set_publish(_queue_conn, item_id, None)
+        # ingest is idempotent and never overwrites text a reviewer touched - safe to re-queue either
+        # stage that had already gone out, so the corrected page reaches wherever it was published.
+        if item["local_publish_status"] == "published":
+            with _db_lock:
+                qdb.set_publish(_queue_conn, item_id, "local", None)
+        if item["web_publish_status"] == "published":
+            with _db_lock:
+                qdb.set_publish(_queue_conn, item_id, "web", "requested")
         _reocr_state[item_id] = {"page": page_number, "state": "done", "message": f"page {page_number} re-read"}
     except Exception as e:
         traceback.print_exc()
@@ -582,7 +608,7 @@ def reocr_page(item_id: int, page_id: int):
         raise HTTPException(409, "another OCR job is running - try again when it finishes or is paused")
     _reocr_state[item_id] = {"page": page["pdf_page_index"] + 1, "state": "running", "message": ""}
     threading.Thread(target=_reocr_worker, args=(item, page, paths), daemon=True).start()
-    return {"ok": True, "was_published": item["publish_status"] == "published"}
+    return {"ok": True, "was_published": item["local_publish_status"] == "published" or item["web_publish_status"] == "published"}
 
 
 @app.get("/api/queue/{item_id}/progress")
@@ -643,10 +669,13 @@ def _advance_queue_forever():
 def _advance_one_step():
     with _db_lock:
         item = qdb.next_pending(_queue_conn)
-        unpublished = qdb.next_unpublished(_queue_conn) if item is None else None
+        local_todo = qdb.next_unpublished(_queue_conn, "local") if item is None else None
+        web_todo = qdb.next_unpublished(_queue_conn, "web") if (item is None and local_todo is None) else None
     if item is None:
-        if unpublished is not None:
-            _run_publish(unpublished)  # OCR is finished and nothing else is queued ahead of it
+        if local_todo is not None:
+            _run_publish(local_todo, "local")  # OCR just finished; local review app is always auto-seeded
+        elif web_todo is not None:
+            _run_publish(web_todo, "web")  # an explicit "Publish to web" click, requested but not yet run
         return
 
     # DOWNLOADING/DOWNLOADED/RASTERIZING/OCR_RUNNING are normally only ever
@@ -751,21 +780,79 @@ def _run_ocr_locked(item_id, item, approved_dir, run_dir):
             qdb.set_status(_queue_conn, item_id, qdb.STATUS_FAILED, error=str(e))
 
 
-def _publish_configured() -> bool:
+LOCAL_API_BASE_DEFAULT = "http://127.0.0.1:8200"
+
+
+def _local_publish_configured() -> bool:
+    # the target is hardcoded (see _publish_stage_config) - only the shared ingest secret is needed
+    return bool(os.environ.get("INGEST_API_KEY"))
+
+
+def _web_publish_configured() -> bool:
     return bool(os.environ.get("API_BASE_URL") and os.environ.get("INGEST_API_KEY"))
 
 
-def _run_publish(item):
-    """Pushes a finished book to the review platform (images -> storage, text
-    + image URLs -> review API). A failure only marks the *publish* as failed
-    - the OCR result stays 'done' and can be re-published with one click."""
+def _publish_target_label(api_base: str, backend_name: str) -> str:
+    """A short "where did this go" string for the queue UI - e.g. "yakshapratinidhi.pythonanywhere.com
+    + supabase storage" vs "127.0.0.1:8200 + local storage" - so it's visible on the button/pill which
+    of the two stages (local app, or the live web deployment) a given publish actually targeted."""
+    netloc = urlparse(api_base).netloc or api_base
+    return f"{netloc} + {backend_name} storage"
+
+
+def _configured_target(stage: str) -> str | None:
+    """What clicking Publish for `stage` would target right now, or None if that stage isn't
+    configured yet. Cheap/side-effect-free (unlike _publish_stage_config) - safe to call on every
+    GET /api/queue poll."""
+    if stage == "local":
+        if not _local_publish_configured():
+            return None
+        return _publish_target_label(os.environ.get("LOCAL_API_BASE_URL", LOCAL_API_BASE_DEFAULT), "local")
+    if not _web_publish_configured():
+        return None
+    return _publish_target_label(os.environ["API_BASE_URL"], os.environ.get("STORAGE_BACKEND", "local"))
+
+
+def _publish_stage_config(stage: str):
+    """(api_base, ingest_key, storage, target) for actually running a publish. Only call once the
+    matching _local_publish_configured()/_web_publish_configured() is true."""
+    key = os.environ["INGEST_API_KEY"]
+    if stage == "local":
+        api_base = os.environ.get("LOCAL_API_BASE_URL", LOCAL_API_BASE_DEFAULT)
+        # forced to local storage regardless of STORAGE_BACKEND, which is the *web* target's setting
+        storage = storagemod.from_env(api_base, backend_override="local")
+        target = _publish_target_label(api_base, "local")
+    else:
+        api_base = os.environ["API_BASE_URL"]
+        storage = storagemod.from_env(api_base)
+        target = _publish_target_label(api_base, os.environ.get("STORAGE_BACKEND", "local"))
+    return api_base, key, storage, target
+
+
+def _run_publish(item, stage: str):
+    """Pushes a finished book to `stage` ('local' app 2, or the live 'web' deployment): images ->
+    storage, text + image URLs -> that stage's review API. A failure only marks that stage's publish as
+    failed - the OCR result stays 'done' and either stage can be re-published with one click.
+
+    Only the 'web' stage also syncs local review work (suggestions/finalizations) up afterward -
+    syncing app 2's own local review database onto itself, for the 'local' stage, would be a no-op at
+    best and is skipped entirely."""
     item_id = item["id"]
-    if not _publish_configured():
+    configured = _local_publish_configured() if stage == "local" else _web_publish_configured()
+    if not configured:
+        reason = "INGEST_API_KEY not set in .env" if stage == "local" else "API_BASE_URL / INGEST_API_KEY not set in .env"
         with _db_lock:
-            qdb.set_publish(_queue_conn, item_id, "skipped", "API_BASE_URL / INGEST_API_KEY not set in .env")
+            qdb.set_publish(_queue_conn, item_id, stage, "skipped", reason)
         return
+    api_base, key, storage, target = _publish_stage_config(stage)
     with _db_lock:
-        qdb.set_publish(_queue_conn, item_id, "publishing")
+        qdb.set_publish(_queue_conn, item_id, stage, "publishing", target=target)
+
+    def report(message: str):
+        print(f"[publish/{stage} {item['book_id']}] {message}")
+        with _db_lock:
+            qdb.set_publish_progress(_queue_conn, item_id, stage, message)
+
     try:
         kavi = None
         conn = _catalog_conn()
@@ -774,24 +861,35 @@ def _run_publish(item):
             kavi = row["kavi_name"] if row else None
         finally:
             conn.close()
-        api_base = os.environ["API_BASE_URL"]
         result = publisher.publish_book(
             Path(item["run_dir"]),
             item["book_id"],
-            storagemod.from_env(api_base),
-            publisher.http_post(api_base, os.environ["INGEST_API_KEY"]),
+            storage,
+            publisher.http_post(api_base, key),
             title=item["title"],
             kavi=kavi,
             catalog_entry_id=item["catalog_entry_id"],
-            progress=lambda m: print(f"[publish {item['book_id']}] {m}"),
+            progress=report,
         )
-        print(f"[publish {item['book_id']}] done: {result}")
+        print(f"[publish/{stage} {item['book_id']}] done: {result}")
+        if stage == "web":
+            try:
+                report("syncing local review work…")
+                local_review_db = Path(os.environ.get("REVIEW_API_DATA", config.PROJECT_ROOT / "review_api_data")) / "review.sqlite3"
+                sync_result = publisher.sync_reviews_to_remote(
+                    local_review_db, item["book_id"], publisher.http_post(api_base, key)
+                )
+                if sync_result:
+                    print(f"[publish/web {item['book_id']}] review sync: {sync_result}")
+            except Exception:
+                # the image/text publish above already succeeded - a review-sync hiccup must not undo that
+                traceback.print_exc()
         with _db_lock:
-            qdb.set_publish(_queue_conn, item_id, "published")
+            qdb.set_publish(_queue_conn, item_id, stage, "published", target=target)
     except Exception as e:
         traceback.print_exc()
         with _db_lock:
-            qdb.set_publish(_queue_conn, item_id, "failed", str(e))
+            qdb.set_publish(_queue_conn, item_id, stage, "failed", str(e), target=target)
 
 
 if not os.environ.get("INTAKE_NO_WORKER"):  # tests set this so no background download/OCR ever starts

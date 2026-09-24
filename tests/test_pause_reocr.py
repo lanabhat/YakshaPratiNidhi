@@ -148,10 +148,12 @@ def test_reocr_is_refused_while_the_book_is_running_or_another_job_holds_the_gpu
 def test_reocr_of_a_published_book_queues_it_for_republishing(client, env, monkeypatch, tmp_path):
     mod = env[0]
     item, pages, work, run_dir = _paused_book_with_ocr(env, tmp_path, "r_pub")
-    set_status(env, item, "done", publish_status="published")
+    set_status(env, item, "done", local_publish_status="published", web_publish_status="published")
     client.post(f"/api/queue/{item}/pages/{pages[0]['id']}/approve", json={"regions": [region(quad(100, 100, 900, 1300))]})
     monkeypatch.setattr(mod.pipeline, "process_page", lambda p, s, pg, b, r, c, on_snippet=None: [rec(1, "NEW")])
     body = client.post(f"/api/queue/{item}/pages/{pages[0]['id']}/reocr").json()
     assert body["was_published"] is True
     wait_reocr(client, item)
-    assert client.get(f"/api/queue/{item}").json()["item"]["publish_status"] is None
+    item_row = client.get(f"/api/queue/{item}").json()["item"]
+    assert item_row["local_publish_status"] is None  # eligible for the worker's next auto-pickup
+    assert item_row["web_publish_status"] == "requested"  # web is never auto-picked-up from NULL

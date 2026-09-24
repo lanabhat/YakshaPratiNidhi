@@ -232,6 +232,7 @@
 
   <section id="view-queue" hidden>
     <div id="queue-banner" hidden><span id="queue-banner-text"></span><button class="btn btn-primary" id="queue-banner-btn">Review pages</button></div>
+    <p id="publish-target-line" style="color:#888; font-size:0.85rem; margin: 0 0 0.6rem;"></p>
     <table>
       <thead><tr><th>#</th><th>Book</th><th>Status</th><th>Pages</th><th>Reviewed</th><th></th></tr></thead>
       <tbody id="queue-rows"></tbody>
@@ -504,16 +505,47 @@ document.getElementById("preview-enqueue").onclick = async () => {
 /* ---------------- queue ---------------- */
 let queuePollTimer = null;
 
+function publishPill(stage, it) {
+  const status = it[`${stage}_publish_status`];
+  const error = it[`${stage}_publish_error`];
+  const target = it[`${stage}_publish_target`];
+  const progress = it[`${stage}_publish_progress`];
+  const cls = status === "published" ? "done" : status === "failed" ? "failed" : "";
+  let out = ` <span class="status-pill ${cls}">${stage}: ${esc(status || "pending")}${target ? ` (${esc(target)})` : ""}</span>`;
+  if (status === "publishing" && progress) out += ` <span style="color:#888">${esc(progress)}</span>`;
+  if (error) out += ` <span style="color:#e08a8a">— ${esc(error)}</span>`;
+  return out;
+}
+
+function publishButton(stage, it) {
+  const status = it[`${stage}_publish_status`];
+  const verb = stage === "local" ? "local app" : "web";
+  if (status === "requested") {
+    return `<button class="btn" disabled>Queued to publish to ${verb}…</button>`;
+  }
+  if (status === "publishing") {
+    return `<button class="btn" disabled>Publishing to ${verb}…</button>`;
+  }
+  const text = status === "failed" ? `${stage === "local" ? "Local" : "Web"} publish failed — Retry`
+    : status === "published" ? `Published to ${verb} — Re-publish`
+    : status === "skipped" ? `Not configured — Publish to ${verb}`
+    : `Publish to ${verb}`;
+  return `<button class="btn btn-primary" data-publish="${stage}:${it.id}">${text}</button>`;
+}
+
 async function loadQueue() {
   const r = await fetch("/api/queue");
   const data = await r.json();
+  document.getElementById("publish-target-line").textContent =
+    `Local publish → ${data.configured_local_target || "not configured (set INGEST_API_KEY)"}` +
+    `  ·  Web publish → ${data.configured_web_target || "not configured (set API_BASE_URL / INGEST_API_KEY)"}`;
   const rows = document.getElementById("queue-rows");
   rows.innerHTML = data.items.map(it => `
     <tr>
       <td>${it.id}</td>
       <td>${esc(it.title)} <span style="color:#666">(${esc(it.book_id)})</span></td>
       <td><span class="status-pill ${it.status}">${it.status.replaceAll("_"," ")}</span>${it.error ? ` <span style="color:#e08a8a">— ${esc(it.error)}</span>` : ""}
-        ${it.status === "done" ? `<span class="status-pill ${it.publish_status === "published" ? "done" : it.publish_status === "failed" ? "failed" : ""}" title="${esc(it.publish_error || "")}">review platform: ${esc(it.publish_status || "pending")}</span>` : ""}</td>
+        ${it.status === "done" ? publishPill("local", it) + publishPill("web", it) : ""}</td>
       <td>${it.page_count ?? "—"}</td>
       <td>${it.reviewed_page_count ?? 0}</td>
       <td>
@@ -522,14 +554,7 @@ async function loadQueue() {
         ${it.status === "paused" ? `<button class="btn btn-primary" data-resume="${it.id}">Resume OCR</button>` : ""}
         ${["ocr_running", "paused", "done", "failed"].includes(it.status) && it.run_dir ? `<button class="btn" data-progress="${it.id}">View progress / fix pages</button>` : ""}
         ${it.status === "failed" ? `<button class="btn" data-retry="${it.id}">Retry</button>` : ""}
-        ${it.status === "done" ? (it.publish_status === "publishing"
-          ? `<button class="btn" disabled>Publishing…</button>`
-          : `<button class="btn btn-primary" data-publish="${it.id}">${
-              it.publish_status === "failed" ? "Retry publish"
-              : it.publish_status === "published" ? "Re-publish"
-              : it.publish_status === "skipped" ? "Publish to review app"
-              : "Add to review app"
-            }</button>`) : ""}
+        ${it.status === "done" ? publishButton("local", it) + " " + publishButton("web", it) : ""}
       </td>
     </tr>
   `).join("");
@@ -550,8 +575,9 @@ async function loadQueue() {
   }
   rows.querySelectorAll("button[data-publish]").forEach(btn => {
     btn.onclick = async () => {
-      const r = await fetch(`/api/queue/${btn.dataset.publish}/publish`, { method: "POST" });
-      if (r.ok) { toast("Publishing…"); loadQueue(); } else { toast("Could not publish"); }
+      const [stage, id] = btn.dataset.publish.split(":");
+      const r = await fetch(`/api/queue/${id}/publish/${stage}`, { method: "POST" });
+      if (r.ok) { toast(`Publishing to ${stage}…`); loadQueue(); } else { toast("Could not publish"); }
     };
   });
   rows.querySelectorAll("button[data-retry]").forEach(btn => {

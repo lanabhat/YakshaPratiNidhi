@@ -1,5 +1,11 @@
 "use strict";
 const CFG = window.LIPI_CONFIG;
+if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+  // this same web/ folder is served both locally (app 1's "local" publish stage feeds app 2 running
+  // here) and deployed to Firebase Hosting - config.js's API_BASE is the *production* target either
+  // way, so when we're clearly running locally, always talk to the local app 2 instead.
+  CFG.API_BASE = CFG.LOCAL_API_BASE || "http://127.0.0.1:8200";
+}
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const STRIP = 20; // page numbers per pagination strip

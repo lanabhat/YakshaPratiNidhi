@@ -66,8 +66,8 @@ class SupabaseStorage:
         return self.url_for(key)
 
 
-def from_env(api_base_url: str | None = None):
-    backend = os.environ.get("STORAGE_BACKEND", "local")
+def from_env(api_base_url: str | None = None, backend_override: str | None = None):
+    backend = backend_override or os.environ.get("STORAGE_BACKEND", "local")
     if backend == "supabase":
         return SupabaseStorage(
             os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"], os.environ.get("SUPABASE_BUCKET", "lipisampada")

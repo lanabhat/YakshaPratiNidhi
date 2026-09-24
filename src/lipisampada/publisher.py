@@ -17,6 +17,7 @@ Design points:
 import gzip
 import io
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -102,17 +103,19 @@ def publish_book(
         return key, url, False
 
     urls, uploaded, skipped = {}, 0, 0
+    progress(f"uploading {len(jobs)} images…")
     with ThreadPoolExecutor(UPLOAD_WORKERS) as pool:
         for i, (key, url, was_skipped) in enumerate(pool.map(upload, jobs.items()), 1):
             urls[key] = url
             state[key] = _signature(jobs[key][0])
             skipped += was_skipped
             uploaded += not was_skipped
-            if i % 50 == 0:
-                progress(f"  uploaded {i}/{len(jobs)} images")
+            if i % 5 == 0 or i == len(jobs):
+                progress(f"uploaded {i}/{len(jobs)} images")
     state_path.write_text(json.dumps({"target": target, "files": state}), encoding="utf-8")
 
     # -- bundle of raw readings ---------------------------------------------------
+    progress("uploading OCR bundle…")
     bundle = {
         snippet_id(book_id, r): {
             "easyocr": r["easyocr"]["text"],
@@ -146,6 +149,7 @@ def publish_book(
                 "refine_failed": bool(r["flags"].get("refine_failed")),
             }
         )
+    progress(f"sending {len(snippets)} snippets to the review API…")
     result = post(
         "/api/ingest/book",
         {
@@ -162,3 +166,59 @@ def publish_book(
     )
     result.update(images_uploaded=uploaded, images_skipped=skipped, bundle_url=bundle_url)
     return result
+
+
+def sync_reviews_to_remote(local_review_db: Path, book_id: str, post) -> dict | None:
+    """For anyone reviewing against a LOCAL copy of the review app (its own database, separate from
+    wherever this book is published to) before that reaches the deployed copy: pushes that local
+    review work - suggestions, accepted word-changes, finalized text - to the deployed database. The
+    counterpart to publish_book's images/AI text, over the same /api/ingest/* channel.
+
+    A no-op (returns None) if there's no local review database, or it has nothing to say about this
+    book - the common case for most publishes, since review normally happens directly against the
+    deployed copy and there's nothing local to sync."""
+    local_review_db = Path(local_review_db)
+    if not local_review_db.exists():
+        return None
+    conn = sqlite3.connect(f"file:{local_review_db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        snip_rows = conn.execute("SELECT * FROM snippets WHERE book_id = ?", (book_id,)).fetchall()
+        if not snip_rows:
+            return None
+        users_by_id = {u["id"]: dict(u) for u in conn.execute("SELECT * FROM users")}
+
+        def real(u):  # a real, attributable account - not an anonymous guest
+            return u and u.get("email") and u["role"] != "guest"
+
+        users_out, seen, snippets_out = [], set(), []
+        for s in snip_rows:
+            sug_out = []
+            for sub in conn.execute("SELECT * FROM suggestions WHERE snippet_id = ?", (s["id"],)):
+                u = users_by_id.get(sub["user_id"])
+                if not real(u):
+                    continue
+                sug_out.append({"email": u["email"], "kind": sub["kind"], "text": sub["text"], "created_at": sub["created_at"]})
+                if u["email"].lower() not in seen:
+                    seen.add(u["email"].lower())
+                    users_out.append({"email": u["email"], "name": u.get("name"), "role": u["role"]})
+            finalizer_email = None
+            if s["finalized_by"]:
+                fu_row = conn.execute("SELECT email, name, role FROM users WHERE uid = ?", (s["finalized_by"],)).fetchone()
+                fu = dict(fu_row) if fu_row else None  # real() calls u.get(...), which sqlite3.Row lacks
+                if real(fu):
+                    finalizer_email = fu["email"]
+                    if fu["email"].lower() not in seen:
+                        seen.add(fu["email"].lower())
+                        users_out.append({"email": fu["email"], "name": fu["name"], "role": fu["role"]})
+            if not sug_out and not s["final_text"] and s["working_text"] == s["ai_text"]:
+                continue  # nothing said about this snippet locally - skip it, not worth sending
+            snippets_out.append({
+                "snippet_id": s["id"], "working_text": s["working_text"], "final_text": s["final_text"],
+                "finalized_by_email": finalizer_email, "finalized_at": s["finalized_at"], "suggestions": sug_out,
+            })
+        if not snippets_out:
+            return None
+        return post("/api/ingest/reviews", {"book_id": book_id, "users": users_out, "snippets": snippets_out})
+    finally:
+        conn.close()

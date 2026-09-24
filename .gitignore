@@ -11,3 +11,4 @@ db/
 review_api_data/
 logs/
 web/config.js
+.firebase/

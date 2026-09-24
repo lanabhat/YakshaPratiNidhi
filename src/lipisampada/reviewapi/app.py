@@ -259,16 +259,34 @@ def create_app(db_path: str | Path | None = None, local_storage_dir: str | Path 
         return jsonify(ok=True)
 
     # -- ingest (called by the local intake app, never by browsers) -----------
-    @app.post("/api/ingest/book")
-    @limiter.exempt
-    def ingest():
+    def _ingest_key_error():
+        """None if the request's ingest key is valid, else a (jsonify(...), status) to return as-is."""
         expected = os.environ.get("INGEST_API_KEY")
         if not expected:
             return jsonify(error="ingest disabled: INGEST_API_KEY not set on the server"), 503
         if request.headers.get("X-Ingest-Key") != expected:
             return jsonify(error="bad ingest key"), 401
+        return None
+
+    @app.post("/api/ingest/book")
+    @limiter.exempt
+    def ingest():
+        err = _ingest_key_error()
+        if err:
+            return err
         b = body()
         return jsonify(database.ingest_book(b["book"], b["snippets"]))
+
+    @app.post("/api/ingest/reviews")
+    @limiter.exempt
+    def ingest_reviews():
+        """Merges suggestions/finalized text made against someone's LOCAL copy of this app into this
+        deployment - the review-work counterpart to /api/ingest/book's images/AI text."""
+        err = _ingest_key_error()
+        if err:
+            return err
+        b = body()
+        return jsonify(database.sync_reviews(b["book_id"], b.get("users", []), b.get("snippets", [])))
 
     return app
 

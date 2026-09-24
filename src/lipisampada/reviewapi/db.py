@@ -151,6 +151,19 @@ class Db:
                     u = self.q1("SELECT * FROM users WHERE uid = ?", (uid,))
                 self.conn.commit()
                 return u
+            # A review sync (see sync_reviews) may have already created a "pending:<email>" placeholder
+            # for this person, attributing suggestions/finalizations to it before they ever signed in
+            # here for real. Claim it now - same row, same id, so that history stays theirs - rather
+            # than starting a second, empty account.
+            if email:
+                pending = self.q1("SELECT * FROM users WHERE uid = ?", (f"pending:{email.lower()}",))
+                if pending:
+                    self.conn.execute(
+                        "UPDATE users SET uid = ?, name = COALESCE(?, name), last_seen = ? WHERE uid = ?",
+                        (uid, name, now(), pending["uid"]),
+                    )
+                    self.conn.commit()
+                    return self.q1("SELECT * FROM users WHERE uid = ?", (uid,))
             invited = False
             if email and role == "reviewer":  # first sign-in: an invite decides the starting role
                 inv = self.q1("SELECT * FROM invites WHERE email = ?", (email.lower(),))
@@ -409,6 +422,77 @@ class Db:
             self.log(None, "ingest_book", book["id"], {"created": created, "updated": updated})
             self.conn.commit()
         return {"created": created, "updated": updated, "pages": len(order)}
+
+    # -- review sync: for someone who reviews against a LOCAL copy of this app (their own machine,
+    # a separate database from this one) before publishing reaches this, the deployed copy ---------
+    def _find_or_create_synced_user(self, email: str, name: str | None, role: str) -> dict:
+        """Resolve who a synced suggestion/finalization belongs to: an existing real account with this
+        email if one has ever signed in here, else a placeholder they'll claim the moment they do
+        (see get_or_create_user) - never a second, disconnected account for the same person."""
+        email = email.strip().lower()
+        u = self.q1(
+            "SELECT * FROM users WHERE LOWER(email) = ? AND role != 'guest' ORDER BY (uid LIKE 'pending:%') LIMIT 1",
+            (email,),
+        )
+        if u:
+            return u
+        uid = f"pending:{email}"
+        self.conn.execute(
+            "INSERT INTO users (uid, email, name, role, created_at, application_status) VALUES (?,?,?,?,?,'unset')",
+            (uid, email, name, role if role in ASSIGNABLE_ROLES else "reviewer", now()),
+        )
+        return self.q1("SELECT * FROM users WHERE uid = ?", (uid,))
+
+    def sync_reviews(self, book_id: str, users: list[dict], snippets: list[dict]) -> dict:
+        """Merges suggestions/working-text/finalization made against a LOCAL copy of this app into
+        this (the deployed) database. Additive and one-directional: never removes or downgrades
+        anything already here - a suggestion only overwrites an older one from the *same* person, an
+        already-finalized snippet here is left exactly as this deployment's editor left it."""
+        with self.lock:
+            if not self.q1("SELECT 1 AS x FROM books WHERE id = ?", (book_id,)):
+                raise NotFound("no such book - publish its text/images first")
+            by_email = {}
+            for u in users:
+                row = self._find_or_create_synced_user(u["email"], u.get("name"), u.get("role", "reviewer"))
+                by_email[row["email"].lower()] = row
+            suggestions_applied = finalizations_applied = working_text_applied = skipped = 0
+            for s in snippets:
+                existing = self.q1("SELECT * FROM snippets WHERE id = ? AND book_id = ?", (s["snippet_id"], book_id))
+                if not existing:
+                    skipped += 1
+                    continue
+                for sug in s.get("suggestions", []):
+                    email = sug["email"].strip().lower()
+                    user = by_email.get(email) or self._find_or_create_synced_user(email, None, "reviewer")
+                    by_email[email] = user
+                    self.conn.execute(
+                        """INSERT INTO suggestions (snippet_id, user_id, kind, text, created_at) VALUES (?,?,?,?,?)
+                           ON CONFLICT(snippet_id, user_id) DO UPDATE SET kind=excluded.kind, text=excluded.text,
+                             created_at=excluded.created_at WHERE excluded.created_at > suggestions.created_at""",
+                        (s["snippet_id"], user["id"], sug["kind"], sug.get("text"), sug["created_at"]),
+                    )
+                    suggestions_applied += 1
+                if s.get("final_text") and existing["final_text"] is None:
+                    finalizer = by_email.get((s.get("finalized_by_email") or "").strip().lower())
+                    self.conn.execute(
+                        "UPDATE snippets SET final_text=?, working_text=?, finalized_by=?, finalized_at=? WHERE id=?",
+                        (s["final_text"], s["final_text"], finalizer["uid"] if finalizer else None,
+                         s.get("finalized_at") or now(), s["snippet_id"]),
+                    )
+                    finalizations_applied += 1
+                elif (existing["final_text"] is None and s.get("working_text")
+                      and s["working_text"] != existing["working_text"]):
+                    # not finalized anywhere yet, but local had already accepted word-changes this deployment hasn't seen
+                    self.conn.execute("UPDATE snippets SET working_text = ? WHERE id = ?", (s["working_text"], s["snippet_id"]))
+                    working_text_applied += 1
+                self.recompute(s["snippet_id"])
+            self.log(None, "sync_reviews", book_id,
+                     {"suggestions": suggestions_applied, "finalizations": finalizations_applied, "skipped": skipped})
+            self.conn.commit()
+        return {
+            "suggestions_applied": suggestions_applied, "finalizations_applied": finalizations_applied,
+            "working_text_applied": working_text_applied, "skipped": skipped,
+        }
 
     # -- tally bookkeeping ------------------------------------------------
     def _current_text(self, s: dict) -> str:

@@ -1,6 +1,10 @@
 // Copy to config.js (git-ignored) and fill in for your deployment.
 window.LIPI_CONFIG = {
-  API_BASE: "http://127.0.0.1:8200",
+  API_BASE: "http://127.0.0.1:8200", // the *production* API - when this page is opened at
+  // localhost/127.0.0.1 (app 1's run_3_frontend.ps1), app.js overrides this automatically to talk to
+  // your local app 2 instead. LOCAL_API_BASE below is optional, only needed if local app 2 runs on a
+  // nonstandard port (default is http://127.0.0.1:8200):
+  // LOCAL_API_BASE: "http://127.0.0.1:8200",
   AUTH_MODE: "dev", // "dev" (type an email, local only) | "firebase" (real Google sign-in)
   // Firebase console -> your project -> Project settings -> General -> "Your apps" -> the web app's
   // SDK setup snippet. Only used when AUTH_MODE is "firebase" - see README "Admins, roles and rights".

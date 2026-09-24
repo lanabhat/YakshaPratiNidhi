@@ -284,15 +284,58 @@ un_api.ps1               # API on http://127.0.0.1:8200 (data in review_api_data
 un_intake.ps1            # as before; finished books now publish themselves
 ```
 
-When a queued book finishes OCR, the intake worker **publishes it
-automatically**: page images (downscaled WebP, ~170 KB instead of 3-11 MB) and
+Publishing is two independent stages, each with its own status pill and button
+in the Queue tab, so a book can be reviewed locally before anyone sees it on
+the web:
+
+- **Local.** The moment a queued book finishes OCR, the intake worker
+  publishes it **automatically** to app 2 running on your own machine
+  (`http://127.0.0.1:8200`, always - regardless of `.env`'s `API_BASE_URL`/
+  `STORAGE_BACKEND`, which now describe the web target only). Only
+  `INGEST_API_KEY` needs to be set for this to work. Open app 3 locally
+  (`run_3_frontend.ps1` -> `http://127.0.0.1:8300`) to review/correct it there
+  - app.js detects it's running at `localhost`/`127.0.0.1` and always talks to
+  local app 2, independent of whatever production `API_BASE` is baked into
+  `web/config.js`.
+- **Web.** Once you're happy with the local review, click **Publish to web**
+  yourself - it's never automatic. This pushes the (possibly now-corrected)
+  images/text to `API_BASE_URL`/`STORAGE_BACKEND` (production), *and* syncs
+  whatever suggestions/accepted word-changes/finalized text were made in the
+  local review app up to the deployed database (see **Review sync** below) -
+  in one click, "1) images 2) OCR text 3) review changes," as one request.
+
+Either stage: page images (downscaled WebP, ~170 KB instead of 3-11 MB) and
 snippet crops go to image storage, a gzipped bundle of the three engines' raw
-readings goes next to them, and the book's text + image URLs are POSTed to the
-API. Re-publishing is safe (unchanged images are skipped, and text a person has
-already worked on is never overwritten); a failed publish shows a **Retry
-publish** button in the Queue tab and never marks the OCR itself as failed.
-Nothing is published until `API_BASE_URL` and `INGEST_API_KEY` are set in `.env`
-(the button appears instead).
+readings goes next to them, and the book's text + image URLs are POSTed to
+that stage's API. Re-publishing either stage is safe (unchanged images are
+skipped, and text a person has already worked on is never overwritten); a
+failed publish shows a **Retry** button for that stage and never marks the
+OCR itself as failed. A stage whose config isn't set in `.env` shows
+"Not configured" instead of a working button.
+
+**Review sync** (runs automatically as part of a **web** publish only - local
+publishing has nothing to sync onto itself). Pushes local review work -
+suggestions, accepted word-changes, finalized text - from
+`review_api_data/review.sqlite3` to the deployed database, over
+`POST /api/ingest/reviews`. It is additive and one-directional (local ->
+remote) and never destructive: a suggestion only overwrites an older one from
+the *same* person (by email, newest `created_at` wins); a snippet already
+finalized on the deployment is left exactly as its editor there left it;
+snippets nothing local touched are skipped entirely. Local reviewers are
+matched to remote accounts by email - someone with no remote account yet gets
+a `pending:<email>` placeholder (same role, no onboarding gate) that they
+transparently claim, history and all, the moment they actually sign in there.
+A sync failure never un-succeeds an already-successful image/text publish.
+
+**Deploying code changes to PythonAnywhere.** After pushing local commits to GitHub as
+usual, run `bash deploy_pythonanywhere.sh` from a PythonAnywhere Bash console, inside the
+repo's checkout there - it `git pull`s the latest code, then reloads the live web app so
+it actually takes effect (a `git pull` alone does not restart the running WSGI process).
+One direction only: PythonAnywhere never pushes back to GitHub, it only catches up to
+what's already been pushed from here. Auto-reload needs a PythonAnywhere API token
+(Account -> API Token) saved as `PYTHONANYWHERE_API_TOKEN` in the `.env` *on*
+PythonAnywhere (see `.env.example`); without one, the script still pulls and just reminds
+you to click Reload on the Web tab yourself.
 
 Model: anyone - even a guest - can attach a suggestion (an edited text, or a
 "looks right" vote) to a snippet, one per person, latest wins. Suggestions are
@@ -307,11 +350,10 @@ change roles (guest / reviewer / editor / admin / superadmin).
 
 Swappable pieces, so everything runs with no accounts today:
 - **Image storage**: `STORAGE_BACKEND=local` (a folder the API serves) or
-  `supabase`. The Supabase backend follows its documented REST API but has
-  **not yet been exercised against a real project**.
+  `supabase` (live in production).
 - **Sign-in**: `AUTH_MODE=dev` (token `dev:<email>`, local development only) or
-  `firebase` (Google sign-in; verification also **not yet exercised against a
-  real Firebase project**, needs `pip install pyjwt cryptography`).
+  `firebase` (Google sign-in, live in production; needs
+  `pip install pyjwt cryptography`).
 
 `python -m pytest` runs the tally, API and publisher tests.
 

@@ -60,6 +60,20 @@ def open_queue_db(db_path: Path) -> sqlite3.Connection:
         conn.execute("ALTER TABLE queue_items ADD COLUMN publish_status TEXT")
         conn.execute("ALTER TABLE queue_items ADD COLUMN publish_error TEXT")
         conn.execute("ALTER TABLE queue_items ADD COLUMN published_at TEXT")
+    if "publish_target" not in existing_item_cols:
+        conn.execute("ALTER TABLE queue_items ADD COLUMN publish_target TEXT")
+    if "local_publish_status" not in existing_item_cols:
+        for col in ("local_publish_status", "local_publish_error", "local_published_at", "local_publish_target",
+                    "web_publish_status", "web_publish_error", "web_published_at", "web_publish_target"):
+            conn.execute(f"ALTER TABLE queue_items ADD COLUMN {col} TEXT")
+        # everything published before local/web were split out was, in effect, a publish to web
+        conn.execute(
+            "UPDATE queue_items SET web_publish_status = publish_status, web_publish_error = publish_error, "
+            "web_published_at = published_at, web_publish_target = publish_target WHERE publish_status IS NOT NULL"
+        )
+    if "local_publish_progress" not in existing_item_cols:
+        conn.execute("ALTER TABLE queue_items ADD COLUMN local_publish_progress TEXT")
+        conn.execute("ALTER TABLE queue_items ADD COLUMN web_publish_progress TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS queue_pages (
@@ -146,27 +160,52 @@ def next_pending(conn: sqlite3.Connection) -> sqlite3.Row | None:
     ).fetchone()
 
 
-def next_unpublished(conn: sqlite3.Connection) -> sqlite3.Row | None:
-    """A finished (OCR done) book still to be pushed to the review platform:
-    never attempted, or interrupted mid-publish by a restart. Failed/skipped
-    ones wait for an explicit retry rather than looping forever."""
+def next_unpublished(conn: sqlite3.Connection, stage: str) -> sqlite3.Row | None:
+    """A finished (OCR done) book still to be pushed to `stage` ('local' or 'web').
+
+    'local' auto-publishes the moment OCR finishes - NULL means "never attempted, eligible for
+    auto-pickup" (or interrupted mid-publish by a restart), matching this query's original single-
+    target behavior. 'web' never fires on its own: only an explicit publish-to-web click (which sets
+    web_publish_status='requested', see set_publish/the /publish/web route) makes it eligible - a
+    fresh, never-published book's web_publish_status stays NULL and is never auto-picked-up here.
+    Either stage: failed/skipped items wait for an explicit retry rather than looping forever."""
+    if stage == "local":
+        return conn.execute(
+            "SELECT * FROM queue_items WHERE status = ? AND (local_publish_status IS NULL OR local_publish_status = 'publishing') "
+            "ORDER BY id LIMIT 1",
+            (STATUS_DONE,),
+        ).fetchone()
     return conn.execute(
-        """
-        SELECT * FROM queue_items
-        WHERE status = ? AND (publish_status IS NULL OR publish_status = 'publishing')
-        ORDER BY id LIMIT 1
-        """,
+        "SELECT * FROM queue_items WHERE status = ? AND web_publish_status IN ('requested', 'publishing') ORDER BY id LIMIT 1",
         (STATUS_DONE,),
     ).fetchone()
 
 
-def set_publish(conn: sqlite3.Connection, item_id: int, publish_status: str | None, error: str | None = None):
+def set_publish(conn: sqlite3.Connection, item_id: int, stage: str, publish_status: str | None, error: str | None = None, target: str | None = None):
+    """stage: 'local' or 'web' - always a literal from our own code, never request input, so it's safe
+    to interpolate as a column-name prefix here (never build it from user-supplied data).
+    target: where this publish attempt went (e.g. "yakshapratinidhi.pythonanywhere.com + supabase
+    storage"), so the queue UI can tell a publish to production apart from one to a local dev API/
+    storage. Left alone (COALESCE) when not known for this call, e.g. the 'skipped' case, which never
+    got far enough to know a target - the UI then still shows whatever the last real attempt used."""
+    assert stage in ("local", "web")
+    prefix = f"{stage}_"
     conn.execute(
-        "UPDATE queue_items SET publish_status = ?, publish_error = ?, "
-        "published_at = CASE WHEN ? = 'published' THEN datetime('now') ELSE published_at END, "
+        f"UPDATE queue_items SET {prefix}publish_status = ?, {prefix}publish_error = ?, "
+        f"{prefix}publish_target = COALESCE(?, {prefix}publish_target), {prefix}publish_progress = NULL, "
+        f"{prefix}published_at = CASE WHEN ? = 'published' THEN datetime('now') ELSE {prefix}published_at END, "
         "updated_at = datetime('now') WHERE id = ?",
-        (publish_status, error, publish_status, item_id),
+        (publish_status, error, target, publish_status, item_id),
     )
+    conn.commit()
+
+
+def set_publish_progress(conn: sqlite3.Connection, item_id: int, stage: str, message: str):
+    """A short human status line while a publish is actively running (e.g. "uploaded 12/94 images"),
+    polled by the queue UI. set_publish() clears this back to NULL on every status transition, so it
+    only ever reflects the *current* attempt, never a stale one left over from a previous run."""
+    assert stage in ("local", "web")
+    conn.execute(f"UPDATE queue_items SET {stage}_publish_progress = ? WHERE id = ?", (message, item_id))
     conn.commit()
 
 
