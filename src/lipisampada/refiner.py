@@ -8,11 +8,14 @@ human reviewer would make."""
 
 import json
 import sqlite3
+import time
 import urllib.request
 from pathlib import Path
 
 OLLAMA_MODEL = "qwen2.5:7b-instruct"
 OLLAMA_HOST = "http://localhost:11434"
+REFINE_TIMEOUT_SECONDS = 180
+REFINE_RETRIES = 2  # a cold model load can genuinely exceed one timeout window
 
 _PROMPT_TEMPLATE = """You are an expert in Kannada Yakshagana Prasanga texts (traditional verse-drama scripts).
 
@@ -95,6 +98,10 @@ def _build_hint(easy_text: str, tess_text: str, surya_text: str, flags: dict) ->
 
 
 def refine(easy_text: str, tess_text: str, surya_text: str, flags: dict, model: str = OLLAMA_MODEL) -> str:
+    """Raises on failure (including after retries) - callers that need to
+    keep going regardless (e.g. an unattended batch run) should catch this
+    and fall back to fallback_text() rather than lose the whole page/book;
+    see pipeline.process_page."""
     prompt = _PROMPT_TEMPLATE.format(
         easy=easy_text or "(empty)",
         tess=tess_text or "(empty)",
@@ -107,9 +114,31 @@ def refine(easy_text: str, tess_text: str, surya_text: str, flags: dict, model: 
     req = urllib.request.Request(
         f"{OLLAMA_HOST}/api/generate", data=body, headers={"Content-Type": "application/json"}
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return data["response"].strip()
+    last_error = None
+    for attempt in range(1 + REFINE_RETRIES):
+        try:
+            with urllib.request.urlopen(req, timeout=REFINE_TIMEOUT_SECONDS) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return data["response"].strip()
+        except Exception as e:
+            last_error = e
+            if attempt < REFINE_RETRIES:
+                time.sleep(2)
+    raise last_error
+
+
+def fallback_text(easy_text: str, tess_text: str, surya_text: str, flags: dict) -> str:
+    """Best guess without the LLM, for when refine() fails even after
+    retries: the majority reading if two engines exactly agree (the same
+    strong signal ensemble.compare() uses for majority_agreement), else
+    EasyOCR's text (the strongest single baseline engine)."""
+    if flags.get("majority_agreement"):
+        normalized = [" ".join((t or "").split()) for t in (easy_text, tess_text, surya_text)]
+        for i, ni in enumerate(normalized):
+            for nj in normalized[i + 1:]:
+                if ni == nj:
+                    return [easy_text, tess_text, surya_text][i]
+    return easy_text or tess_text or surya_text or ""
 
 
 def open_corrections_db(db_path: Path) -> sqlite3.Connection:

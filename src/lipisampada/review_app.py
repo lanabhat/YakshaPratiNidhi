@@ -62,6 +62,9 @@ def _snippet_payload(row) -> dict:
     d["image_url"] = f"/images/{d['image_path']}"
     d["page_image_url"] = f"/images/{d['page_image_path']}" if d.get("page_image_path") else None
     d["bbox"] = json.loads(d["bbox"]) if d.get("bbox") else None
+    d["position"], d["total_count"] = review_db.position_info(_conn, d["id"])
+    if d["status"] in review_db.TERMINAL_STATUSES or d["status"] == review_db.STATUS_NEEDS_EXPERT:
+        d["reviews"] = [dict(r) for r in review_db.reviews_for(_conn, d["id"])]
     return d
 
 
@@ -80,8 +83,21 @@ def get_next(reviewer: str):
         if row is None:
             return {"snippet": None}
         payload = _snippet_payload(row)
-        if row["status"] == review_db.STATUS_NEEDS_EXPERT:
-            payload["reviews"] = [dict(r) for r in review_db.reviews_for(_conn, row["id"])]
+    return {"snippet": payload}
+
+
+@app.get("/api/snippet/{snippet_id}/adjacent")
+def get_adjacent(snippet_id: str, direction: str):
+    if direction not in ("next", "prev"):
+        raise HTTPException(400, "direction must be 'next' or 'prev'")
+    with _db_lock:
+        try:
+            row = review_db.adjacent_snippet(_conn, snippet_id, direction)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        if row is None:
+            return {"snippet": None}
+        payload = _snippet_payload(row)
     return {"snippet": payload}
 
 

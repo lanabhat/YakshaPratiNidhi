@@ -6,3 +6,13 @@ numpy
 surya-ocr
 fastapi
 uvicorn[standard]
+gdown
+PyMuPDF
+flask
+flask-cors
+pytest
+page-dewarp
+psutil
+pyjwt
+cryptography
+flask-limiter

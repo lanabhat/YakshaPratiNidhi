@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lipi-Sampada Intake</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    background: #0f0f10; color: #eee; margin: 0;
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.75rem 1.25rem; background: #1a1a1c; border-bottom: 1px solid #2a2a2c;
+  }
+  header h1 { font-size: 1rem; margin: 0; color: #ccc; font-weight: 600; }
+  nav { display: flex; gap: 0.5rem; }
+  nav button {
+    background: #2a2a2d; color: #eee; border: none; padding: 0.4rem 0.9rem;
+    border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+  }
+  nav button.active { background: #4c8bf5; }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 1.25rem 1rem 4rem; }
+  section[hidden] { display: none; }
+  header[hidden] { display: none; }
+
+  input[type=text] {
+    padding: 0.5rem 0.7rem; border-radius: 6px; border: 1px solid #333;
+    background: #17171a; color: #eee; font-size: 0.9rem; width: 320px;
+  }
+  .btn {
+    padding: 0.4rem 0.9rem; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 0.82rem; font-weight: 600; background: #2a2a2d; color: #eee;
+  }
+  .btn-primary { background: #4c8bf5; color: white; }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid #222; }
+  th { color: #888; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+  tr:hover { background: #17171a; }
+
+  .status-pill { padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; background: #2a2a2d; }
+  .status-pill.done { background: #173a1c; color: #7ee08a; }
+  .status-pill.failed { background: #3a1a1a; color: #e08a8a; }
+  .status-pill.awaiting_review, .status-pill.paused { background: #3a341a; color: #e0c060; }
+  .status-pill.ocr_running, .status-pill.rasterizing, .status-pill.downloading { background: #1a3a4a; color: #7ab8ff; }
+
+  #preview-modal, #progress-modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex;
+    align-items: center; justify-content: center; z-index: 30;
+  }
+  #preview-modal[hidden], #progress-modal[hidden] { display: none; }
+  .modal-card {
+    background: #1a1a1c; border-radius: 10px; padding: 1rem; width: min(90vw, 900px);
+    max-height: 90vh; overflow: auto;
+  }
+  .modal-card h2 { margin: 0 0 0.75rem; font-size: 1rem; }
+  .modal-close { float: right; background: none; border: none; color: #999; font-size: 1.3rem; cursor: pointer; }
+  #preview-frame { width: 100%; height: 70vh; border: none; border-radius: 6px; }
+
+  #progress-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; max-height: 60vh; overflow: auto; }
+  .progress-thumb {
+    width: 90px; cursor: pointer; border: 2px solid #333; border-radius: 6px; overflow: hidden;
+    background: #000; position: relative;
+  }
+  .progress-thumb img { width: 100%; height: 110px; object-fit: cover; display: block; opacity: 0.55; }
+  .progress-thumb.done img { opacity: 1; }
+  .progress-thumb.done { border-color: #2f7d3f; }
+  .progress-thumb .thumb-label { font-size: 0.65rem; text-align: center; padding: 0.15rem; color: #999; }
+  .progress-thumb.done .thumb-label { color: #7ee08a; }
+  #progress-summary { font-size: 0.85rem; color: #999; margin-bottom: 0.25rem; }
+  #progress-text-panel {
+    margin-top: 0.75rem; background: #17171a; border-radius: 8px; padding: 0.75rem; font-size: 0.95rem;
+    max-height: 30vh; overflow: auto; white-space: pre-wrap;
+  }
+  #review-toolbar { display: flex; gap: 0.8rem; align-items: center; margin: 0.75rem 0; flex-wrap: wrap; font-size: 0.82rem; color: #999; }
+  #review-toolbar label { display: flex; align-items: center; gap: 0.4rem; }
+  #page-canvas { background: #333; border-radius: 6px; cursor: crosshair; max-width: 100%; }
+  #review-pages-strip { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.75rem; }
+  .page-thumb {
+    flex: 0 0 auto; width: 44px; height: 44px; border-radius: 4px; border: 2px solid #333;
+    display: flex; align-items: center; justify-content: center; font-size: 0.75rem; color: #999; cursor: pointer;
+  }
+  .page-thumb.approved { border-color: #2f7d3f; color: #7ee08a; background: rgba(47,125,63,0.12); }
+  .page-thumb.current { border-color: #4c8bf5; color: #fff; }
+
+  .filters { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+  .seg { display: inline-flex; border: 1px solid #333; border-radius: 8px; overflow: hidden; }
+  .seg button { background: #17171a; color: #aaa; border: none; padding: 0.42rem 0.8rem; font-size: 0.82rem; cursor: pointer; border-right: 1px solid #333; }
+  .seg button:last-child { border-right: none; }
+  .seg button.active { background: #4c8bf5; color: #fff; }
+  .seg button small { opacity: 0.75; margin-left: 0.25rem; }
+  #bulk-bar { position: sticky; top: 0; z-index: 5; background: #1d2a44; border: 1px solid #2f4a7a; border-radius: 8px; padding: 0.5rem 0.8rem; margin-top: 0.8rem; display: flex; gap: 0.8rem; align-items: center; font-size: 0.85rem; }
+  #bulk-bar[hidden] { display: none; }
+  .pager { display: flex; gap: 0.6rem; align-items: center; margin-top: 1rem; font-size: 0.85rem; color: #999; flex-wrap: wrap; }
+  .pager input { width: 5rem; padding: 0.35rem 0.5rem; }
+  td.actions { white-space: nowrap; }
+  #view-catalog td:nth-child(5), #view-catalog td:nth-child(4) { font-size: 0.76rem; color: #9a9aa0; max-width: 260px; }
+  td.actions .btn { margin-right: 0.3rem; }
+  .kosha-yes { color: #7ee08a; } .kosha-no { color: #666; }
+  .src-tag { font-size: 0.65rem; color: #9aa; border: 1px solid #333; border-radius: 4px; padding: 0 0.3rem; margin-left: 0.3rem; }
+  .btn-add { background: #1f4a2a; color: #7ee08a; }
+  .nav-badge { background: #e0a030; color: #111; border-radius: 999px; padding: 0 0.45rem; margin-left: 0.4rem; font-size: 0.72rem; font-weight: 700; }
+  .nav-badge[hidden] { display: none; }
+  #queue-banner { background: #3a341a; border: 1px solid #6a5a20; color: #f0d070; border-radius: 8px; padding: 0.6rem 0.9rem; margin-bottom: 0.8rem; font-size: 0.88rem; display: flex; gap: 0.8rem; align-items: center; }
+  #queue-banner[hidden] { display: none; }
+  #preview-links { display: flex; gap: 0.5rem; margin-bottom: 0.6rem; }
+  #preview-links .btn.active { background: #4c8bf5; color: #fff; }
+  /* #view-editor is a full page (not a popup): shown in place of <header>/<main>, which are
+     hidden while it's open, so it gets the entire browser viewport. */
+  #view-editor { display: flex; flex-direction: column; height: 100vh; }
+  #view-editor[hidden] { display: none; }
+  .ed-topbar {
+    display: flex; align-items: center; gap: 0.9rem; padding: 0.6rem 1rem; background: #1a1a1c;
+    border-bottom: 1px solid #2a2a2c; flex-wrap: wrap;
+  }
+  .ed-topbar h2 { margin: 0; font-size: 0.95rem; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* page strip: a full-width bar pinned to the bottom, not squeezed into the top bar */
+  #review-pages-strip {
+    display: flex; gap: 0.3rem; flex-wrap: nowrap; overflow-x: auto; flex: 0 0 auto;
+    padding: 0.5rem 1rem; background: #1a1a1c; border-top: 1px solid #2a2a2c;
+  }
+  .ed-toolbar {
+    display: flex; gap: 1.1rem; flex-wrap: wrap; align-items: center; padding: 0.55rem 1rem;
+    background: #17171a; border-bottom: 1px solid #262629;
+  }
+  .ed-tool-group { display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
+  .ed-tool-label { font-size: 0.7rem; color: #8a8a90; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 0.15rem; }
+  .ed-toolbar .btn, .ed-toolbar #region-list .chip-btn { font-size: 0.78rem; padding: 0.3rem 0.6rem; }
+  .ed-spin-btn { padding: 0.3rem 0.5rem; line-height: 1; }
+  #crop-angle-label { font-size: 0.78rem; color: #ccc; min-width: 3.2em; text-align: center; display: inline-block; }
+  #region-list { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+  .chip-btn { background: #24242a; color: #ddd; border: 1px solid #333; border-radius: 6px; cursor: pointer; }
+  .chip-btn.active { background: #1d3a6e; border-color: #4c8bf5; color: #fff; }
+  .chip-btn small { color: #9aa; }
+  .ed-body { flex: 1 1 auto; display: flex; align-items: stretch; min-height: 0; gap: 0.5rem; padding: 0.6rem; }
+  .ed-nav-btn {
+    flex: 0 0 auto; width: 3rem; align-self: stretch; border: none; border-radius: 8px;
+    background: #17171a; color: #8fa0c8; font-size: 1.4rem; cursor: pointer;
+  }
+  .ed-nav-btn:hover:not(:disabled) { background: #1d2a44; color: #fff; }
+  .ed-nav-btn:disabled { opacity: 0.3; cursor: default; }
+  #ed-canvas-col { flex: 1 1 auto; min-width: 220px; display: flex; flex-direction: column; align-items: center; overflow: auto; }
+  .ed-hint { font-size: 0.78rem; color: #8a8a90; margin-bottom: 0.4rem; align-self: flex-start; }
+  #ed-canvas-col canvas { touch-action: none; }
+  /* The boundary between the canvas and the right panel is a dedicated drag handle (.ed-splitter),
+     not just a resize grip on the panel's corner - grab it anywhere along its height. It sets
+     #ed-right-resize's width directly and re-fits the canvas (editor.js), so both sides settle at
+     whatever split feels comfortable. */
+  .ed-splitter { flex: 0 0 7px; align-self: stretch; cursor: col-resize; position: relative; background: #17171a; border-radius: 3px; }
+  .ed-splitter:hover, .ed-splitter.dragging { background: #2a3f66; }
+  .ed-splitter::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 2px; height: 28px; background: #444; border-radius: 2px; }
+  .ed-splitter:hover::after, .ed-splitter.dragging::after { background: #7ab8ff; }
+  /* Three layers, each with one job (Chromium will not let you drag-resize an element that is
+     itself a flex item, so the resize target can't be .ed-right directly):
+       .ed-right         - the flex item; sizes itself to whatever .ed-right-resize currently is
+       .ed-right-resize  - a plain block, NOT a flex item - the splitter (and its own corner grip)
+                           set this element's width/size directly
+       .ed-right-inner   - the scrolling content, kept separate so its scrollbar can't compete with
+                           the resize grip for the same corner pixels (same split the review app
+                           uses between #page-panel and #page-panel-body) */
+  .ed-right { flex: 0 0 auto; }
+  .ed-right-resize { width: 480px; min-width: 280px; max-width: 1000px; height: 100%; overflow: hidden; resize: horizontal; }
+  .ed-right-inner { display: flex; flex-direction: column; gap: 0.7rem; height: 100%; overflow-y: auto; overflow-x: hidden; padding-right: 0.3rem; }
+  @media (max-width: 1000px) {
+    .ed-body { flex-direction: column; }
+    .ed-nav-btn { width: auto; align-self: center; padding: 0.4rem 1rem; }
+    .ed-splitter { display: none; }
+    .ed-right-resize { resize: none !important; width: auto !important; max-width: none !important; height: auto !important; }
+  }
+  .ed-block { background: #17171a; border: 1px solid #262629; border-radius: 8px; padding: 0.6rem 0.7rem; }
+  .ed-block h3 { margin: 0 0 0.45rem; font-size: 0.78rem; color: #9a9aa2; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+  .ed-block h3 small { text-transform: none; letter-spacing: 0; color: #e0c060; margin-left: 0.4rem; }
+  .ed-row { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.4rem; }
+  .ed-row .btn { font-size: 0.78rem; padding: 0.3rem 0.6rem; }
+  /* Dark, not white: the page image itself is usually white paper, so a white box made it
+     impossible to tell resized-but-empty space from the image growing to fill it. The image
+     keeps its own border/shadow so its actual edges are always obvious against the dark box. */
+  #preview-box {
+    background: #232327; border-radius: 6px; min-height: 200px; min-width: 260px; height: 480px; max-height: 80vh;
+    overflow: hidden; text-align: center; position: relative; resize: both;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #preview-box img { max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; background: #fff; box-shadow: 0 0 0 1px #48484e, 0 4px 16px rgba(0,0,0,0.45); }
+  #preview-box.loading::after { content: "updating…"; position: absolute; top: 4px; right: 6px; font-size: 0.7rem; color: #555; background: rgba(255,255,255,0.85); padding: 0 0.3rem; border-radius: 4px; }
+  #preview-size { font-size: 0.7rem; color: #777; margin-top: 0.25rem; }
+  .enh-row { display: grid; grid-template-columns: 5.6rem 1fr 2.6rem; gap: 0.4rem; align-items: center; font-size: 0.8rem; color: #aaa; margin: 0.25rem 0; }
+  .enh-row[hidden] { display: none; }
+  .enh-row input[type=range] { width: 100%; }
+  .enh-row select { grid-column: 2 / 4; background: #141415; color: #eee; border: 1px solid #333; border-radius: 6px; padding: 0.3rem; }
+  .ed-actions { display: flex; flex-direction: column; gap: 0.4rem; }
+  #toast {
+    position: fixed; bottom: 1.25rem; left: 50%; transform: translateX(-50%);
+    background: #2a2a2d; color: #eee; padding: 0.6rem 1.1rem; border-radius: 8px;
+    font-size: 0.85rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 40;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Lipi-Sampada Intake</h1>
+  <nav>
+    <button id="nav-catalog" class="active">Catalog</button>
+    <button id="nav-queue">Queue<span class="nav-badge" id="queue-badge" hidden></span></button>
+  </nav>
+</header>
+
+<main>
+  <section id="view-catalog">
+    <div class="filters">
+      <input type="text" id="catalog-search" placeholder="Search prasanga, kavi, publisher, entry ID…">
+      <button class="btn" id="catalog-search-btn">Search</button>
+      <div class="seg" id="kosha-seg">
+        <button data-kosha="any">All<small></small></button>
+        <button data-kosha="has">Has kosha link<small></small></button>
+        <button data-kosha="none" class="active">No kosha link<small></small></button>
+      </div>
+    </div>
+    <div id="bulk-bar" hidden><span id="bulk-count"></span><button class="btn btn-primary" id="bulk-add">Add selected to queue</button><button class="btn" id="bulk-clear">Clear</button></div>
+    <table>
+      <thead><tr><th><input type="checkbox" id="select-all" title="Select all on this page"></th><th>Entry</th><th>Prasanga</th><th>Kavi</th><th>Publisher</th><th>Date</th><th>Kosha</th><th></th></tr></thead>
+      <tbody id="catalog-rows"></tbody>
+    </table>
+    <div class="pager"><button class="btn" id="pg-prev">◀ Prev</button><span id="pg-range"></span><button class="btn" id="pg-next">Next ▶</button>
+      <span>Go to page</span><input type="text" id="pg-goto" inputmode="numeric"><button class="btn" id="pg-go">Go</button></div>
+  </section>
+
+  <section id="view-queue" hidden>
+    <div id="queue-banner" hidden><span id="queue-banner-text"></span><button class="btn btn-primary" id="queue-banner-btn">Review pages</button></div>
+    <table>
+      <thead><tr><th>#</th><th>Book</th><th>Status</th><th>Pages</th><th>Reviewed</th><th></th></tr></thead>
+      <tbody id="queue-rows"></tbody>
+    </table>
+  </section>
+</main>
+
+<div id="progress-modal" hidden>
+  <div class="modal-card" style="width:min(95vw, 1000px);">
+    <button class="modal-close" id="progress-close">&times;</button>
+    <h2 id="progress-title"></h2>
+    <div id="progress-summary"></div>
+    <div id="progress-grid"></div>
+    <div id="progress-text-panel" hidden></div>
+  </div>
+</div>
+
+<div id="preview-modal" hidden>
+  <div class="modal-card">
+    <button class="modal-close" id="preview-close">&times;</button>
+    <h2 id="preview-title"></h2>
+    <div id="preview-links"><button class="btn" id="pv-prati">Prati sangraha</button><button class="btn" id="pv-kosha">Kosha</button></div>
+    <iframe id="preview-frame"></iframe>
+    <div style="margin-top:0.75rem;">
+      <button class="btn btn-primary" id="preview-enqueue">Add to queue</button>
+    </div>
+  </div>
+</div>
+
+<section id="view-editor" hidden>
+  <div class="ed-topbar">
+    <button class="btn" id="review-close">&larr; Back to queue</button>
+    <h2 id="review-title"></h2>
+  </div>
+  <div class="ed-toolbar">
+    <div class="ed-tool-group">
+      <span class="ed-tool-label">Crop type</span>
+      <div class="seg" id="crop-mode-seg">
+        <button type="button" id="mode-simple" class="active">Simple crop</button>
+        <button type="button" id="mode-freeform">Free-form / curved</button>
+      </div>
+      <button class="btn" id="draw-rect">Draw new rectangle</button>
+    </div>
+    <div class="ed-tool-group">
+      <span class="ed-tool-label">Straighten</span>
+      <button class="btn" id="auto-crop">Auto-crop</button><button class="btn" id="auto-dewarp">Auto-dewarp</button>
+      <button class="btn" id="reset-curve">Reset curves</button><button class="btn" id="rot-left">⟲ 90°</button><button class="btn" id="rot-right">⟳ 90°</button>
+    </div>
+    <div class="ed-tool-group">
+      <span class="ed-tool-label">Crop angle</span>
+      <button class="btn ed-spin-btn" id="rot-fine-up" title="Nudge this crop's angle">&#9650;</button>
+      <span id="crop-angle-label">0.0&deg;</span>
+      <button class="btn ed-spin-btn" id="rot-fine-down" title="Nudge this crop's angle the other way">&#9660;</button>
+    </div>
+    <div class="ed-tool-group">
+      <span class="ed-tool-label">Crops on this page</span>
+      <div id="region-list"></div>
+      <button class="btn" id="add-crop">+ Add crop</button><button class="btn" id="split-two">Split in 2</button>
+      <button class="btn" id="crop-up" title="Earlier in reading order">↑</button><button class="btn" id="crop-down" title="Later in reading order">↓</button>
+      <button class="btn" id="crop-delete">Delete</button>
+    </div>
+  </div>
+  <div class="ed-body">
+    <button class="ed-nav-btn" id="ed-prev" title="Previous page">&#10094;</button>
+    <div id="ed-canvas-col">
+      <div class="ed-hint" id="ed-hint"></div>
+      <canvas id="page-canvas" width="800" height="600"></canvas>
+    </div>
+    <button class="ed-nav-btn" id="ed-next" title="Next page">&#10095;</button>
+    <div class="ed-splitter" id="ed-splitter" title="Drag to resize"></div>
+    <div class="ed-right"><div class="ed-right-resize" id="ed-right-resize"><div class="ed-right-inner">
+        <section class="ed-block">
+          <h3>Result (what OCR will read) <small id="preview-note"></small></h3>
+          <div id="preview-box"><img id="preview-img" alt="preview of the active crop"></div>
+          <div id="preview-size"></div>
+        </section>
+        <section class="ed-block">
+          <h3>Prepare for OCR</h3>
+          <div class="enh-row"><span>Brightness</span><input type="range" id="enh-brightness" min="-100" max="100" step="1"><span id="lbl-brightness"></span></div>
+          <div class="enh-row"><span>Contrast</span><input type="range" id="enh-contrast" min="50" max="250" step="5"><span id="lbl-contrast"></span></div>
+          <div class="enh-row"><span>Black &amp; white</span>
+            <select id="enh-binarize"><option value="off">Off (keep greys)</option><option value="global">Threshold</option><option value="otsu">Automatic (Otsu)</option><option value="adaptive">Adaptive (uneven lighting)</option></select></div>
+          <div class="enh-row" id="row-threshold" hidden><span>Threshold</span><input type="range" id="enh-threshold" min="0" max="255" step="1"><span id="lbl-threshold"></span></div>
+          <div id="row-adaptive" hidden>
+            <div class="enh-row"><span>Window</span><input type="range" id="enh-block" min="11" max="151" step="2"><span id="lbl-block"></span></div>
+            <div class="enh-row"><span>Bias</span><input type="range" id="enh-c" min="0" max="40" step="1"><span id="lbl-c"></span></div>
+          </div>
+          <div class="ed-row"><button class="btn" id="reset-enhance">Reset</button></div>
+        </section>
+        <div class="ed-actions">
+          <button class="btn btn-primary" id="accept-next">Accept &amp; next</button>
+          <button class="btn" id="accept-all">Accept all remaining auto-crops</button>
+        </div>
+    </div></div></div>
+  </div>
+  <div id="review-pages-strip"></div>
+</section>
+
+<div id="toast"></div>
+
+<script src="editor.js"></script>
+<script>
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 1800);
+}
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : s;
+  return d.innerHTML;
+}
+
+/* ---------------- nav ---------------- */
+function showView(name) {
+  document.getElementById("view-catalog").hidden = name !== "catalog";
+  document.getElementById("view-queue").hidden = name !== "queue";
+  document.getElementById("nav-catalog").classList.toggle("active", name === "catalog");
+  document.getElementById("nav-queue").classList.toggle("active", name === "queue");
+  if (name === "queue") loadQueue();
+}
+document.getElementById("nav-catalog").onclick = () => showView("catalog");
+document.getElementById("nav-queue").onclick = () => showView("queue");
+
+/* ---------------- catalog ---------------- */
+let previewEntry = null;
+const cat = { kosha: "none", offset: 0, limit: 50, total: 0, entries: [], selected: new Set() };
+const QUEUE_LABEL = { queued: "queued", downloading: "downloading", downloaded: "downloading", rasterizing: "rasterizing",
+  awaiting_review: "awaiting review", approved: "approved", ocr_running: "OCR running", paused: "OCR paused", done: "done", failed: "failed" };
+
+async function loadCatalog() {
+  const search = document.getElementById("catalog-search").value.trim();
+  const r = await fetch(`/api/catalog?search=${encodeURIComponent(search)}&kosha=${cat.kosha}&limit=${cat.limit}&offset=${cat.offset}`);
+  const data = await r.json();
+  cat.total = data.total; cat.entries = data.entries;
+  document.querySelectorAll("#kosha-seg button").forEach(b => {
+    b.classList.toggle("active", b.dataset.kosha === cat.kosha);
+    b.querySelector("small").textContent = ` ${data.counts[b.dataset.kosha]}`;
+  });
+  renderCatalog();
+}
+
+function renderCatalog() {
+  const rows = document.getElementById("catalog-rows");
+  rows.innerHTML = cat.entries.map(e => {
+    const queueable = e.can_queue && !e.queue_status;
+    const action = e.queue_status
+      ? `<span class="status-pill ${e.queue_status}">${QUEUE_LABEL[e.queue_status] || e.queue_status}</span>`
+      : e.can_queue ? `<button class="btn btn-add" data-add="${e.id}">Add to queue</button>`
+      : `<button class="btn" disabled title="The prati link is not a Drive, archive.org or PDF link">Cannot queue</button>`;
+    return `
+    <tr>
+      <td>${queueable ? `<input type="checkbox" data-sel="${e.id}" ${cat.selected.has(e.id) ? "checked" : ""}>` : ""}</td>
+      <td>${esc(e.entry_id)}</td>
+      <td>${esc(e.prasanga_name)}</td>
+      <td>${esc(e.kavi_name)}</td>
+      <td>${esc(e.publisher_name)}</td>
+      <td>${esc(e.publish_date_kannada || e.publish_date_english)}</td>
+      <td class="${e.has_kosha ? "kosha-yes" : "kosha-no"}">${e.has_kosha ? "✓" : "—"}</td>
+      <td class="actions">
+        <button class="btn" data-prati="${e.id}" ${e.preview_url ? "" : "disabled"}>Preview prati sangraha${e.prati_kind === "archive" ? '<span class="src-tag">archive.org</span>' : ""}</button>
+        <button class="btn" data-kosha-btn="${e.id}" ${e.has_kosha ? "" : 'disabled title="No kosha link"'}>Preview kosha</button>
+        ${action}
+      </td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="8" style="color:#888;padding:2rem;text-align:center">No books match.</td></tr>`;
+
+  const byId = (id) => cat.entries.find(e => String(e.id) === String(id));
+  rows.querySelectorAll("[data-prati]").forEach(b => b.onclick = () => openPreview(byId(b.dataset.prati), "prati"));
+  rows.querySelectorAll("[data-kosha-btn]").forEach(b => b.onclick = () => openPreview(byId(b.dataset.koshaBtn), "kosha"));
+  rows.querySelectorAll("[data-add]").forEach(b => b.onclick = () => addOne(parseInt(b.dataset.add, 10)));
+  rows.querySelectorAll("[data-sel]").forEach(c => c.onchange = () => {
+    const id = parseInt(c.dataset.sel, 10);
+    c.checked ? cat.selected.add(id) : cat.selected.delete(id);
+    updateBulkBar();
+  });
+
+  const from = cat.total ? cat.offset + 1 : 0, to = Math.min(cat.offset + cat.limit, cat.total);
+  const pages = Math.max(1, Math.ceil(cat.total / cat.limit));
+  document.getElementById("pg-range").textContent = `${from}–${to} of ${cat.total.toLocaleString()} · page ${Math.floor(cat.offset / cat.limit) + 1} of ${pages}`;
+  document.getElementById("pg-prev").disabled = cat.offset === 0;
+  document.getElementById("pg-next").disabled = cat.offset + cat.limit >= cat.total;
+  document.getElementById("select-all").checked = false;
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const n = cat.selected.size;
+  document.getElementById("bulk-bar").hidden = n === 0;
+  document.getElementById("bulk-count").textContent = `${n} selected`;
+}
+
+async function postQueue(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || "Could not queue");
+  return data;
+}
+async function addOne(id) {
+  try {
+    const r = await postQueue("/api/queue", { catalog_entry_id: id });
+    toast(r.outcome === "added" ? "Added to queue" : "Already in the queue");
+    cat.selected.delete(id);
+    await loadCatalog(); refreshQueueBadge();
+  } catch (e) { toast(e.message); }
+}
+document.getElementById("bulk-add").onclick = async () => {
+  try {
+    const r = await postQueue("/api/queue/bulk", { catalog_entry_ids: [...cat.selected] });
+    const bits = [`Added ${r.added.length}`];
+    if (r.already_queued.length) bits.push(`${r.already_queued.length} already queued`);
+    if (r.unsupported.length) bits.push(`${r.unsupported.length} cannot be queued`);
+    toast(bits.join(" · "));
+    cat.selected.clear();
+    await loadCatalog(); refreshQueueBadge();
+  } catch (e) { toast(e.message); }
+};
+document.getElementById("bulk-clear").onclick = () => { cat.selected.clear(); renderCatalog(); };
+document.getElementById("select-all").onchange = (e) => {
+  const on = e.target.checked;
+  cat.entries.filter(x => x.can_queue && !x.queue_status).forEach(x => on ? cat.selected.add(x.id) : cat.selected.delete(x.id));
+  renderCatalog();
+  document.getElementById("select-all").checked = on;
+};
+
+document.querySelectorAll("#kosha-seg button").forEach(b => b.onclick = () => { cat.kosha = b.dataset.kosha; cat.offset = 0; cat.selected.clear(); loadCatalog(); });
+const runSearch = () => { cat.offset = 0; cat.selected.clear(); loadCatalog(); };
+document.getElementById("catalog-search-btn").onclick = runSearch;
+document.getElementById("catalog-search").addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
+document.getElementById("pg-prev").onclick = () => { cat.offset = Math.max(0, cat.offset - cat.limit); loadCatalog(); };
+document.getElementById("pg-next").onclick = () => { cat.offset += cat.limit; loadCatalog(); };
+const gotoPage = () => {
+  const n = parseInt(document.getElementById("pg-goto").value, 10);
+  const pages = Math.max(1, Math.ceil(cat.total / cat.limit));
+  if (n >= 1 && n <= pages) { cat.offset = (n - 1) * cat.limit; loadCatalog(); } else { toast(`Enter a page from 1 to ${pages}`); }
+};
+document.getElementById("pg-go").onclick = gotoPage;
+document.getElementById("pg-goto").addEventListener("keydown", (e) => { if (e.key === "Enter") gotoPage(); });
+
+function showPreviewPane(which) {
+  const e = previewEntry;
+  const url = which === "kosha" ? e.kosha_preview_url : e.preview_url;
+  document.getElementById("preview-frame").src = url || "";
+  document.getElementById("pv-prati").classList.toggle("active", which === "prati");
+  document.getElementById("pv-kosha").classList.toggle("active", which === "kosha");
+}
+function openPreview(entry, which = "prati") {
+  previewEntry = entry;
+  document.getElementById("preview-title").textContent = `${entry.entry_id} — ${entry.prasanga_name || ""}`;
+  document.getElementById("pv-kosha").disabled = !entry.has_kosha;
+  document.getElementById("preview-enqueue").hidden = !entry.can_queue || !!entry.queue_status;
+  showPreviewPane(which);
+  document.getElementById("preview-modal").hidden = false;
+}
+document.getElementById("pv-prati").onclick = () => showPreviewPane("prati");
+document.getElementById("pv-kosha").onclick = () => showPreviewPane("kosha");
+document.getElementById("preview-close").onclick = () => { document.getElementById("preview-modal").hidden = true; document.getElementById("preview-frame").src = ""; };
+document.getElementById("preview-enqueue").onclick = async () => {
+  if (!previewEntry) return;
+  try {
+    const r = await postQueue("/api/queue", { catalog_entry_id: previewEntry.id });
+    toast(r.outcome === "added" ? "Added to queue" : "Already in the queue");
+    document.getElementById("preview-modal").hidden = true;
+    document.getElementById("preview-frame").src = "";
+    await loadCatalog(); refreshQueueBadge();
+  } catch (e) { toast(e.message); }
+};
+
+/* ---------------- queue ---------------- */
+let queuePollTimer = null;
+
+async function loadQueue() {
+  const r = await fetch("/api/queue");
+  const data = await r.json();
+  const rows = document.getElementById("queue-rows");
+  rows.innerHTML = data.items.map(it => `
+    <tr>
+      <td>${it.id}</td>
+      <td>${esc(it.title)} <span style="color:#666">(${esc(it.book_id)})</span></td>
+      <td><span class="status-pill ${it.status}">${it.status.replaceAll("_"," ")}</span>${it.error ? ` <span style="color:#e08a8a">— ${esc(it.error)}</span>` : ""}
+        ${it.status === "done" ? `<span class="status-pill ${it.publish_status === "published" ? "done" : it.publish_status === "failed" ? "failed" : ""}" title="${esc(it.publish_error || "")}">review platform: ${esc(it.publish_status || "pending")}</span>` : ""}</td>
+      <td>${it.page_count ?? "—"}</td>
+      <td>${it.reviewed_page_count ?? 0}</td>
+      <td>
+        ${it.status === "awaiting_review" ? `<button class="btn btn-primary" data-review="${it.id}">Review pages</button>` : ""}
+        ${it.status === "ocr_running" ? `<button class="btn" data-pause="${it.id}">Pause OCR</button>` : ""}
+        ${it.status === "paused" ? `<button class="btn btn-primary" data-resume="${it.id}">Resume OCR</button>` : ""}
+        ${["ocr_running", "paused", "done", "failed"].includes(it.status) && it.run_dir ? `<button class="btn" data-progress="${it.id}">View progress / fix pages</button>` : ""}
+        ${it.status === "failed" ? `<button class="btn" data-retry="${it.id}">Retry</button>` : ""}
+        ${it.status === "done" ? (it.publish_status === "publishing"
+          ? `<button class="btn" disabled>Publishing…</button>`
+          : `<button class="btn btn-primary" data-publish="${it.id}">${
+              it.publish_status === "failed" ? "Retry publish"
+              : it.publish_status === "published" ? "Re-publish"
+              : it.publish_status === "skipped" ? "Publish to review app"
+              : "Add to review app"
+            }</button>`) : ""}
+      </td>
+    </tr>
+  `).join("");
+  rows.querySelectorAll("button[data-review]").forEach(btn => {
+    btn.onclick = () => openReview(parseInt(btn.dataset.review, 10));
+  });
+  rows.querySelectorAll("button[data-progress]").forEach(btn => {
+    btn.onclick = () => openProgress(parseInt(btn.dataset.progress, 10));
+  });
+  for (const [attr, action, msg] of [["pause", "pause", "Pausing after the current snippet…"], ["resume", "resume", "Resuming…"]]) {
+    rows.querySelectorAll(`button[data-${attr}]`).forEach(btn => {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        const r = await fetch(`/api/queue/${btn.dataset[attr]}/${action}`, { method: "POST" });
+        if (r.ok) { toast(msg); loadQueue(); } else { toast((await r.json().catch(() => ({}))).detail || "Could not " + action); btn.disabled = false; }
+      };
+    });
+  }
+  rows.querySelectorAll("button[data-publish]").forEach(btn => {
+    btn.onclick = async () => {
+      const r = await fetch(`/api/queue/${btn.dataset.publish}/publish`, { method: "POST" });
+      if (r.ok) { toast("Publishing…"); loadQueue(); } else { toast("Could not publish"); }
+    };
+  });
+  rows.querySelectorAll("button[data-retry]").forEach(btn => {
+    btn.onclick = async () => {
+      const r = await fetch(`/api/queue/${btn.dataset.retry}/retry`, { method: "POST" });
+      if (r.ok) { toast("Retrying…"); loadQueue(); } else { toast("Could not retry"); }
+    };
+  });
+  updateQueueBanner(data.items);
+  clearTimeout(queuePollTimer);
+  if (!document.getElementById("view-queue").hidden) queuePollTimer = setTimeout(loadQueue, 3000);
+}
+
+function updateQueueBanner(items) {
+  const waiting = items.filter(i => i.status === "awaiting_review");
+  const badge = document.getElementById("queue-badge");
+  badge.hidden = waiting.length === 0; badge.textContent = waiting.length;
+  const banner = document.getElementById("queue-banner");
+  banner.hidden = waiting.length === 0;
+  if (waiting.length) {
+    document.getElementById("queue-banner-text").textContent =
+      `${waiting.length} book${waiting.length === 1 ? " is" : "s are"} waiting for you to check the page crops (crop, rotate, split spreads).`;
+    document.getElementById("queue-banner-btn").onclick = () => openReview(waiting[0].id);
+  }
+}
+async function refreshQueueBadge() {
+  try { updateQueueBanner((await (await fetch("/api/queue")).json()).items); } catch (e) { /* server restarting */ }
+}
+setInterval(refreshQueueBadge, 6000);
+
+/* ---------------- OCR progress view ---------------- */
+let progressItemId = null;
+let progressPollTimer = null;
+
+function parsePageFilename(filename) {
+  // matches layout.FILENAME_PATTERN: IMG_<date>_<page>_<side>.png
+  const m = filename.match(/IMG_\d+_(\d+)_(\w+)\.png$/);
+  return m ? { page_number: parseInt(m[1], 10), side: m[2] } : null;
+}
+
+async function openProgress(itemId) {
+  progressItemId = itemId;
+  document.getElementById("progress-modal").hidden = false;
+  document.getElementById("progress-text-panel").hidden = true;
+  await refreshProgress();
+}
+document.getElementById("progress-close").onclick = () => {
+  document.getElementById("progress-modal").hidden = true;
+  clearTimeout(progressPollTimer);
+  loadQueue();
+};
+
+async function refreshProgress() {
+  if (progressItemId == null || document.getElementById("progress-modal").hidden) return;
+  const r = await fetch(`/api/queue/${progressItemId}/progress`);
+  const data = await r.json();
+  document.getElementById("progress-title").textContent = `${data.book_id} — OCR progress`;
+  const snippetNote = data.current_snippet_total
+    ? ` (page ${data.processed_page_count + 1}: snippet ${data.current_snippet_index}/${data.current_snippet_total})`
+    : "";
+  progressData = data;
+  const re = data.reocr;
+  const reNote = re ? (re.state === "running" ? ` — re-reading page ${re.page}…` : re.state === "done" ? ` — ${re.message}` : ` — re-read failed: ${re.message}`) : "";
+  document.getElementById("progress-summary").textContent =
+    `${data.processed_page_count} / ${data.page_count || "?"} pages processed${snippetNote} — ${data.status.replaceAll("_", " ")}${reNote}`;
+
+  const grid = document.getElementById("progress-grid");
+  grid.innerHTML = data.pages.map(filename => {
+    const parsed = parsePageFilename(filename);
+    const key = parsed ? `${parsed.page_number}_${parsed.side}` : null;
+    const done = key && data.records_by_page[key];
+    return `
+      <div class="progress-thumb ${done ? "done" : ""}" data-filename="${esc(filename)}" data-key="${esc(key || "")}">
+        <img src="/output/${data.book_id}/pages/${encodeURIComponent(filename)}" loading="lazy">
+        <div class="thumb-label">${done ? "✓ " : ""}${esc(filename.replace(/^IMG_\d+_/, "").replace(/\.png$/, ""))}</div>
+      </div>
+    `;
+  }).join("");
+  grid.querySelectorAll(".progress-thumb").forEach(el => {
+    el.onclick = () => showPageText(data.records_by_page[el.dataset.key] || [], el.dataset.filename);
+  });
+  if (!document.getElementById("progress-text-panel").hidden && progressShown) showPageText(data.records_by_page[progressShown.key] || [], progressShown.filename, true);
+
+  clearTimeout(progressPollTimer);
+  if (data.status === "ocr_running" || (re && re.state === "running")) progressPollTimer = setTimeout(refreshProgress, 3000);
+}
+
+let progressData = null, progressShown = null;
+
+function showPageText(records, filename, refreshOnly) {
+  const parsed = parsePageFilename(filename);
+  progressShown = { key: parsed ? `${parsed.page_number}_${parsed.side}` : "", filename };
+  const panel = document.getElementById("progress-text-panel");
+  panel.hidden = false;
+  const busy = progressData && (progressData.status === "ocr_running" || (progressData.reocr && progressData.reocr.state === "running"));
+  const fixBtn = parsed ? `<button class="btn btn-primary" id="fix-page-btn" ${busy ? "disabled" : ""}
+      title="${busy ? "Pause the OCR (or wait for the re-read) first" : "Re-crop, straighten or adjust brightness, then read this page again"}">Re-crop / enhance &amp; re-OCR page ${parsed.page_number}</button>` : "";
+  panel.innerHTML = `<b>${esc(filename)}</b> ${fixBtn}${busy ? ` <span style="color:#888">(pause the OCR to fix a page)</span>` : ""}<br><br>` +
+    (records.length ? records.map(r => `<div style="margin-bottom:0.6rem;">${esc((r.refined && r.refined.text) || r.easyocr.text)}</div>`).join("")
+                    : `<i style="color:#888">not read yet</i>`);
+  const b = document.getElementById("fix-page-btn");
+  if (b && !busy) b.onclick = () => {
+    document.getElementById("progress-modal").hidden = true;
+    clearTimeout(progressPollTimer);
+    openReview(progressItemId, parsed.page_number - 1, true);
+  };
+}
+
+const initialEdit = edParseHash();
+if (initialEdit) {
+  openReview(initialEdit.itemId, initialEdit.idx, false, true).catch(() => {
+    toast("Could not reopen that page - it may no longer exist");
+    location.hash = "";
+    showView("queue");
+  });
+} else {
+  showView("catalog");
+  loadCatalog();
+}
+</script>
+</body>
+</html>

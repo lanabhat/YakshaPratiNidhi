@@ -6,9 +6,11 @@
 <title>Lipi-Sampada Review</title>
 <style>
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     font-family: -apple-system, "Segoe UI", sans-serif;
     background: #0f0f10; color: #eee; margin: 0;
+    display: flex; flex-direction: column; min-height: 100vh;
   }
   header {
     display: flex; justify-content: space-between; align-items: center;
@@ -18,11 +20,11 @@
   #reviewer-badge { font-size: 0.85rem; color: #7ab8ff; }
   #reviewer-badge button { margin-left: 0.5rem; background: none; border: none; color: #888; cursor: pointer; text-decoration: underline; font-size: 0.8rem; }
   #progress { font-size: 0.8rem; color: #888; padding: 0.4rem 1.25rem; background: #161617; }
-  main { max-width: 900px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+  main { max-width: 900px; margin: 0 auto; padding: 1.5rem 1rem 4rem; width: 100%; }
 
   .overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.7);
-    display: flex; align-items: center; justify-content: center; z-index: 10;
+    display: flex; align-items: center; justify-content: center; z-index: 30;
   }
   .overlay[hidden] { display: none; }
   .overlay .card {
@@ -46,6 +48,9 @@
 
   .snippet-img-wrap { background: #fff; border-radius: 8px; padding: 0.5rem; margin-bottom: 1rem; text-align: center; }
   .snippet-img-wrap img { max-width: 100%; max-height: 45vh; }
+  .nav-row { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; font-size: 0.8rem; color: #888; }
+  .nav-row .btn { padding: 0.3rem 0.7rem; font-size: 0.78rem; }
+  .nav-row .btn:disabled { opacity: 0.4; cursor: default; }
   .meta-row { font-size: 0.8rem; color: #888; margin-bottom: 0.75rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
   .status-pill { padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; background: #2a2a2d; }
   .status-pill.needs_expert { background: #5a3a1a; color: #f0b070; }
@@ -54,52 +59,139 @@
   .view-page-btn:hover { background: #1a1a1c; }
   .snippet-img-wrap img { cursor: zoom-in; }
 
+  /* ---- workspace: main (review form) + page-panel (full page view) ---- */
+  #workspace { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
+  #workspace[data-slot="right"] { flex-direction: row; }
+  #workspace[data-slot="left"] { flex-direction: row-reverse; }
+  #workspace[data-slot="top"] { flex-direction: column-reverse; }
+  #workspace[data-slot="bottom"] { flex-direction: column; }
+
+  #workspace main { flex: 1 1 auto; min-width: 280px; min-height: 200px; overflow: auto; resize: both; }
+  #workspace[data-slot="top"] main, #workspace[data-slot="bottom"] main { resize: vertical; }
+  #workspace[data-slot="left"] main, #workspace[data-slot="right"] main { resize: horizontal; }
+
   #page-panel {
-    position: fixed; top: 0; right: 0; height: 100vh; width: 0; overflow: hidden;
-    background: #1a1a1c; border-left: 1px solid #2a2a2c; box-shadow: -4px 0 16px rgba(0,0,0,0.4);
-    transition: width 0.22s ease; z-index: 20; display: flex; flex-direction: column;
+    background: #1a1a1c; display: flex; flex-direction: column;
+    overflow: auto; min-width: 240px; min-height: 180px; resize: both;
   }
-  #page-panel.expanded { width: min(50vw, 680px); }
+  #workspace[data-slot="right"] #page-panel { border-left: 1px solid #2a2a2c; width: min(50vw, 680px); }
+  #workspace[data-slot="left"] #page-panel { border-right: 1px solid #2a2a2c; width: min(50vw, 680px); }
+  #workspace[data-slot="top"] #page-panel,
+  #workspace[data-slot="bottom"] #page-panel { border-top: 1px solid #2a2a2c; border-bottom: 1px solid #2a2a2c; width: 100%; height: 40vh; }
+  #page-panel[hidden] { display: none; }
+
   #page-panel-header {
     display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
-    padding: 0.7rem 1rem; border-bottom: 1px solid #2a2a2c;
+    padding: 0.6rem 0.8rem; border-bottom: 1px solid #2a2a2c; cursor: grab; touch-action: none;
+    user-select: none; -webkit-user-select: none;
   }
+  #page-panel-header.dragging { cursor: grabbing; }
   #page-panel-header h3 { margin: 0; font-size: 0.85rem; color: #999; font-weight: 600; }
+  #page-panel-header .hint { font-size: 0.68rem; color: #666; margin-left: 0.5rem; }
   #page-panel-close { background: none; border: none; color: #999; cursor: pointer; font-size: 1.3rem; line-height: 1; padding: 0.1rem 0.4rem; }
   #page-panel-close:hover { color: #eee; }
+
+  #page-panel-toolbar {
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; flex-shrink: 0;
+    padding: 0.45rem 0.8rem; border-bottom: 1px solid #2a2a2c; background: #17171a; font-size: 0.72rem; color: #999;
+  }
+  #page-panel-toolbar label { display: flex; align-items: center; gap: 0.4rem; }
+  #page-panel-toolbar input[type="range"] { width: 90px; }
+
   #page-panel-body { flex: 1; overflow: auto; background: #fff; padding: 0.75rem; }
-  .page-img-wrap { position: relative; }
-  .page-img-wrap img { display: block; max-width: 100%; }
+  .page-img-wrap { position: relative; display: inline-block; }
+  .page-img-wrap img { display: block; }
   #page-highlight { position: absolute; border: 3px solid #e8524a; background: rgba(232, 82, 74, 0.18); pointer-events: none; }
 
   #page-panel-tab {
-    position: fixed; top: 50%; right: 0; transform: translateY(-50%); z-index: 19;
-    background: #2a2a2d; color: #7ab8ff; border: 1px solid #333; border-right: none;
-    border-radius: 8px 0 0 8px; padding: 0.7rem 0.35rem; cursor: pointer;
-    writing-mode: vertical-rl; font-size: 0.78rem; letter-spacing: 0.02em;
+    position: fixed; bottom: 1.1rem; left: 1.1rem; z-index: 19;
+    background: #2a2a2d; color: #7ab8ff; border: 1px solid #333;
+    border-radius: 999px; padding: 0.5rem 0.9rem; cursor: pointer;
+    font-size: 0.8rem; box-shadow: 0 2px 10px rgba(0,0,0,0.4);
   }
   #page-panel-tab:hover { background: #1a1a1c; }
   #page-panel-tab[hidden] { display: none; }
+
+  #layer-toggle {
+    position: fixed; bottom: 1.1rem; right: 1.1rem; z-index: 25;
+    background: #4c8bf5; color: white; border: none;
+    border-radius: 999px; padding: 0.6rem 1rem; cursor: pointer;
+    font-size: 0.8rem; font-weight: 600; box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+  }
+  #layer-toggle[hidden] { display: none; }
+
+  @media (max-width: 768px) {
+    #workspace { display: block; }
+    #workspace main, #page-panel {
+      position: absolute; inset: 0; width: 100% !important; height: 100% !important;
+      resize: none; border: none !important;
+    }
+    #workspace main { background: #0f0f10; }
+    #workspace main { z-index: 2; }
+    #page-panel { z-index: 3; }
+    #workspace main.layer-bg, #page-panel.layer-bg { z-index: 1; pointer-events: none; }
+    #workspace main.layer-fg, #page-panel.layer-fg { z-index: 4; pointer-events: auto; }
+  }
+
   #f-disagreement { background: #241a12; border: 1px solid #4a3520; border-radius: 8px; padding: 0.7rem 0.9rem; margin-bottom: 0.8rem; font-size: 0.9rem; }
   #f-disagreement .dis-row { margin: 0.3rem 0; }
   #f-disagreement .dis-label { color: #e0a955; font-size: 0.75rem; display: block; }
+  #f-finalized { background: #12241a; border: 1px solid #204a35; border-radius: 8px; padding: 0.7rem 0.9rem; margin-top: 0.9rem; font-size: 0.85rem; color: #7ee0a0; }
+
+  .engine-score {
+    display: inline-block; min-width: 2.6rem; text-align: center; border-radius: 999px;
+    padding: 0.05rem 0.4rem; font-size: 0.68rem; margin-right: 0.5rem; font-weight: 700;
+  }
+  .engine-score.high { background: #173a1c; color: #7ee08a; }
+  .engine-score.mid { background: #3a341a; color: #e0c060; }
+  .engine-score.low { background: #3a1a1a; color: #e08a8a; }
+  .raw-row .raw-text { cursor: text; }
+  .raw-row .raw-text::selection { background: #4c8bf5; color: #fff; }
+
+  #dock-preview {
+    position: fixed; background: rgba(76,139,245,0.22); border: 2px dashed #4c8bf5;
+    z-index: 15; pointer-events: none; display: none; border-radius: 6px;
+  }
+  #dock-preview.show { display: block; }
+
+  #suggest-popup {
+    position: fixed; z-index: 35; background: #1e1e20; border: 1px solid #333; border-radius: 8px;
+    padding: 0.6rem; width: min(320px, 90vw); box-shadow: 0 4px 20px rgba(0,0,0,0.5); font-size: 0.85rem;
+  }
+  #suggest-popup[hidden] { display: none; }
+  #suggest-popup .suggest-title { font-size: 0.72rem; color: #999; margin-bottom: 0.4rem; }
+  .suggest-cand {
+    display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.4rem; border-radius: 6px;
+    cursor: pointer; margin-bottom: 0.25rem;
+  }
+  .suggest-cand:hover { background: #2a2a2d; }
+  .suggest-cand .suggest-cand-label { font-size: 0.68rem; color: #7ab8ff; width: 4.2rem; flex-shrink: 0; }
+  .suggest-cand .suggest-cand-text { flex: 1; }
+  .suggest-cand.no-match { color: #666; font-style: italic; cursor: default; }
+  .suggest-cand.no-match:hover { background: none; }
+  .suggest-custom { display: flex; gap: 0.4rem; margin-top: 0.4rem; }
+  .suggest-custom input {
+    flex: 1; padding: 0.35rem 0.5rem; border-radius: 6px; border: 1px solid #333;
+    background: #141415; color: #eee; font-size: 0.85rem;
+  }
+  .suggest-custom button { padding: 0.35rem 0.7rem; font-size: 0.78rem; }
 
   textarea {
     width: 100%; min-height: 6rem; padding: 0.75rem; border-radius: 8px; border: 1px solid #333;
-    background: #17171a; color: #f0f0f0; font-size: 1.15rem; line-height: 1.6; resize: vertical;
+    background: #17171a; color: #f0f0f0; font-size: var(--review-font-size, 1.15rem); line-height: 1.6; resize: vertical;
   }
   .actions { display: flex; gap: 0.6rem; margin-top: 0.9rem; flex-wrap: wrap; }
 
   details { margin-top: 1.1rem; background: #17171a; border-radius: 8px; padding: 0.6rem 0.9rem; }
   details summary { cursor: pointer; font-size: 0.85rem; color: #999; }
-  .raw-row { margin: 0.5rem 0; font-size: 0.95rem; }
+  .raw-row { margin: 0.5rem 0; font-size: var(--review-font-size, 0.95rem); }
   .raw-label { display: inline-block; width: 85px; color: #7ab8ff; font-size: 0.75rem; vertical-align: top; }
 
   #empty-state, #loading { text-align: center; color: #888; padding: 3rem 1rem; }
   #toast {
     position: fixed; bottom: 1.25rem; left: 50%; transform: translateX(-50%);
     background: #2a2a2d; color: #eee; padding: 0.6rem 1.1rem; border-radius: 8px;
-    font-size: 0.85rem; opacity: 0; transition: opacity 0.2s; pointer-events: none;
+    font-size: 0.85rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 40;
   }
   #toast.show { opacity: 1; }
 </style>
@@ -112,11 +204,17 @@
 </header>
 <div id="progress"></div>
 
+<div id="workspace" data-slot="right">
 <main>
   <div id="loading">Loading…</div>
   <div id="empty-state" hidden>Nothing left to review right now — thank you!</div>
 
   <div id="review-card" hidden>
+    <div class="nav-row">
+      <button class="btn btn-secondary" id="btn-prev">◀ Prev</button>
+      <span id="f-position"></span>
+      <button class="btn btn-secondary" id="btn-next">Next ▶</button>
+    </div>
     <div class="meta-row">
       <span>Page <span id="f-page"></span> · side <span id="f-side"></span> · #<span id="f-seq"></span></span>
       <span id="f-status" class="status-pill"></span>
@@ -125,27 +223,29 @@
     <div class="snippet-img-wrap"><img id="f-img" alt="snippet"></div>
     <div id="f-disagreement" hidden></div>
     <textarea id="f-text" lang="kn"></textarea>
-    <div class="actions">
+    <div class="actions" id="f-actions">
       <button class="btn btn-primary" id="btn-looks-good">Looks good, no change</button>
       <button class="btn btn-secondary" id="btn-submit-edit">Submit edited text</button>
       <button class="btn btn-expert" id="btn-expert" hidden>Submit as expert (final)</button>
     </div>
+    <div id="f-finalized" hidden></div>
     <details>
       <summary>Show raw engine readings</summary>
-      <div class="raw-row"><span class="raw-label">EasyOCR</span><span id="f-easy"></span></div>
-      <div class="raw-row"><span class="raw-label">Tesseract</span><span id="f-tess"></span></div>
-      <div class="raw-row"><span class="raw-label">Surya</span><span id="f-surya"></span></div>
+      <div class="raw-row"><span class="raw-label">EasyOCR</span><span class="engine-score" id="f-easy-score"></span><span class="raw-text" id="f-easy"></span></div>
+      <div class="raw-row"><span class="raw-label">Tesseract</span><span class="engine-score" id="f-tess-score"></span><span class="raw-text" id="f-tess"></span></div>
+      <div class="raw-row"><span class="raw-label">Surya</span><span class="engine-score" id="f-surya-score"></span><span class="raw-text" id="f-surya"></span></div>
     </details>
   </div>
 </main>
 
-<div id="toast"></div>
-
-<button id="page-panel-tab" hidden>▸ Full page</button>
-<div id="page-panel">
+<div id="page-panel" hidden>
   <div id="page-panel-header">
-    <h3>Full page</h3>
+    <h3>Full page <span class="hint">drag to reposition</span></h3>
     <button id="page-panel-close" aria-label="Close">&times;</button>
+  </div>
+  <div id="page-panel-toolbar">
+    <label>Zoom <input type="range" id="zoom-slider" min="0.4" max="3" step="0.1" value="1"></label>
+    <label>Text size <input type="range" id="font-slider" min="0.8" max="2.2" step="0.05" value="1.15"></label>
   </div>
   <div id="page-panel-body">
     <div class="page-img-wrap">
@@ -154,6 +254,22 @@
     </div>
   </div>
 </div>
+</div>
+
+<button id="page-panel-tab" hidden>🔍 Full page</button>
+<button id="layer-toggle" hidden>Bring to front</button>
+<div id="dock-preview"></div>
+
+<div id="suggest-popup" hidden>
+  <div class="suggest-title">Replace selection with:</div>
+  <div id="suggest-candidates"></div>
+  <div class="suggest-custom">
+    <input type="text" id="suggest-custom-input" placeholder="Type a replacement…">
+    <button class="btn btn-secondary" id="suggest-custom-apply">Use</button>
+  </div>
+</div>
+
+<div id="toast"></div>
 
 <div class="overlay" id="name-overlay">
   <div class="card">
@@ -165,6 +281,7 @@
 
 <script>
 const STORAGE_KEY = "lipisampada_reviewer";
+const LAYOUT_KEY = "lipisampada_layout";
 let current = null;
 
 function reviewerName() { return localStorage.getItem(STORAGE_KEY); }
@@ -206,6 +323,70 @@ async function refreshStats() {
     (s.by_status.awaiting_second_review ? ` · ${s.by_status.awaiting_second_review} awaiting a second reviewer` : "");
 }
 
+const TERMINAL_STATUSES = new Set(["confirmed", "provisionally_verified", "expert_approved"]);
+
+function renderSnippet(snippet) {
+  current = snippet;
+  document.getElementById("f-page").textContent = current.page_number;
+  document.getElementById("f-side").textContent = current.side;
+  document.getElementById("f-seq").textContent = current.paragraph_sequence;
+  document.getElementById("f-img").src = current.image_url;
+  document.getElementById("f-text").value =
+    current.status === "awaiting_second_review" ? current.refined_text : (current.final_text || current.refined_text);
+  document.getElementById("f-easy").textContent = current.easyocr_text || "(empty)";
+  document.getElementById("f-tess").textContent = current.tesseract_text || "(empty)";
+  document.getElementById("f-surya").textContent = current.surya_text || "(empty)";
+
+  document.getElementById("f-position").textContent =
+    current.position && current.total_count ? `${current.position} of ${current.total_count}` : "";
+  document.getElementById("btn-prev").disabled = current.position <= 1;
+  document.getElementById("btn-next").disabled = current.position >= current.total_count;
+
+  const pill = document.getElementById("f-status");
+  pill.textContent = current.status.replaceAll("_", " ");
+  pill.className = "status-pill " + current.status;
+
+  document.getElementById("btn-view-page").hidden = !current.page_image_url;
+  const panelOpen = !document.getElementById("page-panel").hidden;
+  document.getElementById("page-panel-tab").hidden = !current.page_image_url || panelOpen;
+  if (panelOpen) {
+    renderPageView(); // keep an already-open panel in sync with the new snippet
+  }
+
+  const isExpertCase = current.status === "needs_expert";
+  const isTerminal = TERMINAL_STATUSES.has(current.status);
+  const isReadOnly = isTerminal; // reached via Prev/Next browsing, or a snippet finalized elsewhere
+  document.getElementById("f-actions").hidden = isReadOnly;
+  document.getElementById("btn-expert").hidden = !isExpertCase;
+  document.getElementById("btn-looks-good").hidden = isExpertCase || isReadOnly;
+  document.getElementById("btn-submit-edit").hidden = isExpertCase || isReadOnly;
+  document.getElementById("f-text").readOnly = isReadOnly;
+
+  const finalizedBox = document.getElementById("f-finalized");
+  if (isTerminal) {
+    const reviewers = (current.reviews || []).map(r => esc(r.reviewer_name));
+    finalizedBox.hidden = false;
+    finalizedBox.innerHTML = "✓ Finalized — no further action needed" +
+      (reviewers.length ? ` (reviewed by ${[...new Set(reviewers)].join(", ")})` : "");
+  } else {
+    finalizedBox.hidden = true;
+  }
+
+  const disBox = document.getElementById("f-disagreement");
+  if (isExpertCase && current.reviews && current.reviews.length) {
+    disBox.hidden = false;
+    disBox.innerHTML = "<b>Reviewers disagreed — what they each submitted:</b>" +
+      current.reviews.map(r =>
+        `<div class="dis-row"><span class="dis-label">${esc(r.reviewer_name)} (${esc(r.role)})</span>${esc(r.submitted_text)}</div>`
+      ).join("");
+  } else {
+    disBox.hidden = true;
+  }
+  document.getElementById("review-card").hidden = false;
+  if (!isReadOnly) document.getElementById("f-text").focus();
+  recomputeAlignments();
+}
+
 async function loadNext() {
   document.getElementById("review-card").hidden = true;
   document.getElementById("empty-state").hidden = true;
@@ -220,46 +401,18 @@ async function loadNext() {
     current = null;
     return;
   }
-  current = data.snippet;
-  document.getElementById("f-page").textContent = current.page_number;
-  document.getElementById("f-side").textContent = current.side;
-  document.getElementById("f-seq").textContent = current.paragraph_sequence;
-  document.getElementById("f-img").src = current.image_url;
-  document.getElementById("f-text").value =
-    current.status === "awaiting_second_review" ? current.refined_text : (current.final_text || current.refined_text);
-  document.getElementById("f-easy").textContent = current.easyocr_text || "(empty)";
-  document.getElementById("f-tess").textContent = current.tesseract_text || "(empty)";
-  document.getElementById("f-surya").textContent = current.surya_text || "(empty)";
-
-  const pill = document.getElementById("f-status");
-  pill.textContent = current.status.replaceAll("_", " ");
-  pill.className = "status-pill " + current.status;
-
-  document.getElementById("btn-view-page").hidden = !current.page_image_url;
-  const panelExpanded = document.getElementById("page-panel").classList.contains("expanded");
-  document.getElementById("page-panel-tab").hidden = !current.page_image_url || panelExpanded;
-  if (panelExpanded) {
-    renderPageView(); // keep an already-open panel in sync with the new snippet
-  }
-
-  const isExpertCase = current.status === "needs_expert";
-  document.getElementById("btn-expert").hidden = !isExpertCase;
-  document.getElementById("btn-looks-good").hidden = isExpertCase;
-  document.getElementById("btn-submit-edit").hidden = isExpertCase;
-
-  const disBox = document.getElementById("f-disagreement");
-  if (isExpertCase && current.reviews && current.reviews.length) {
-    disBox.hidden = false;
-    disBox.innerHTML = "<b>Reviewers disagreed — what they each submitted:</b>" +
-      current.reviews.map(r =>
-        `<div class="dis-row"><span class="dis-label">${esc(r.reviewer_name)} (${esc(r.role)})</span>${esc(r.submitted_text)}</div>`
-      ).join("");
-  } else {
-    disBox.hidden = true;
-  }
-  document.getElementById("review-card").hidden = false;
-  document.getElementById("f-text").focus();
+  renderSnippet(data.snippet);
 }
+
+async function goAdjacent(direction) {
+  if (!current) return;
+  const r = await fetch(`/api/snippet/${encodeURIComponent(current.id)}/adjacent?direction=${direction}`);
+  const data = await r.json();
+  if (!data.snippet) { toast(direction === "prev" ? "Already at the first snippet" : "Already at the last snippet"); return; }
+  renderSnippet(data.snippet);
+}
+document.getElementById("btn-prev").onclick = () => goAdjacent("prev");
+document.getElementById("btn-next").onclick = () => goAdjacent("next");
 
 async function submit(text, isExpert) {
   if (!text.trim()) { toast("Text can't be empty"); return; }
@@ -281,12 +434,358 @@ async function submit(text, isExpert) {
   loadNext();
 }
 
+/* ---------------- word alignment: live agreement % + selection suggestions ---------------- */
+
+function tokenize(str) {
+  const tokens = [];
+  const re = /\S+/g;
+  let m;
+  while ((m = re.exec(str || "")) !== null) {
+    tokens.push({ text: m[0], start: m.index, end: m.index + m[0].length });
+  }
+  return tokens;
+}
+
+// LCS word-alignment via O(n*m) DP; returns monotonic matched (aIdx,bIdx) anchor pairs.
+function alignTokens(aTokens, bTokens, bText) {
+  const n = aTokens.length, m = bTokens.length;
+  const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      if (aTokens[i - 1].text === bTokens[j - 1].text) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+  const matches = [];
+  let i = n, j = m;
+  while (i > 0 && j > 0) {
+    if (aTokens[i - 1].text === bTokens[j - 1].text) {
+      matches.push({ aIdx: i - 1, bIdx: j - 1 });
+      i--; j--;
+    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+  matches.reverse();
+  return { aTokens, bTokens, bText: bText || "", matches };
+}
+
+function alignmentScore(alignment) {
+  const { aTokens, bTokens, matches } = alignment;
+  if (aTokens.length === 0 && bTokens.length === 0) return 100;
+  return Math.round((2 * matches.length) / (aTokens.length + bTokens.length) * 100);
+}
+
+// Projects a [selA, selB) current-token range through the alignment onto the
+// engine token range, by bracketing with the nearest matched anchors and
+// taking the gap on the engine side. Returns null if not trustworthy.
+function projectSelection(alignment, selA, selB) {
+  const { aTokens, bTokens, matches } = alignment;
+  if (bTokens.length === 0 || alignmentScore(alignment) < 15) return null;
+  let loB = -1, hiB = bTokens.length;
+  for (const mtch of matches) {
+    if (mtch.aIdx < selA) loB = Math.max(loB, mtch.bIdx);
+    if (mtch.aIdx >= selB) { hiB = mtch.bIdx; break; }
+  }
+  const selLen = selB - selA;
+  const gapLen = hiB - loB - 1;
+  if (gapLen > Math.max(6, selLen * 4)) return null; // likely alignment noise, not a real correspondence
+  if (gapLen <= 0) return "";
+  return alignment.bText.slice(bTokens[loB + 1].start, bTokens[hiB - 1].end);
+}
+
+let alignments = { easy: null, tess: null, surya: null };
+let scoreDebounce = null;
+
+function recomputeAlignments() {
+  clearTimeout(scoreDebounce);
+  scoreDebounce = setTimeout(() => {
+    if (!current) return;
+    const curTokens = tokenize(document.getElementById("f-text").value);
+    alignments.easy = alignTokens(curTokens, tokenize(current.easyocr_text), current.easyocr_text);
+    alignments.tess = alignTokens(curTokens, tokenize(current.tesseract_text), current.tesseract_text);
+    alignments.surya = alignTokens(curTokens, tokenize(current.surya_text), current.surya_text);
+    setScoreBadge("f-easy-score", alignmentScore(alignments.easy));
+    setScoreBadge("f-tess-score", alignmentScore(alignments.tess));
+    setScoreBadge("f-surya-score", alignmentScore(alignments.surya));
+  }, 150);
+}
+function setScoreBadge(id, pct) {
+  const el = document.getElementById(id);
+  el.textContent = pct + "%";
+  el.className = "engine-score " + (pct >= 90 ? "high" : pct >= 70 ? "mid" : "low");
+}
+document.getElementById("f-text").addEventListener("input", recomputeAlignments);
+
+/* ---- selection -> suggestion popup ---- */
+
+function getCaretCoords(textarea, position) {
+  const mirror = document.createElement("div");
+  const style = getComputedStyle(textarea);
+  ["fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing", "padding", "border",
+   "boxSizing", "whiteSpace", "wordWrap"].forEach(p => mirror.style[p] = style[p]);
+  mirror.style.position = "absolute";
+  mirror.style.visibility = "hidden";
+  mirror.style.width = textarea.clientWidth + "px";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.wordWrap = "break-word";
+  mirror.textContent = textarea.value.substring(0, position);
+  const marker = document.createElement("span");
+  marker.textContent = "​";
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+  const rect = textarea.getBoundingClientRect();
+  const markerRect = marker.getBoundingClientRect();
+  const mirrorRect = mirror.getBoundingClientRect();
+  const coords = {
+    x: rect.left + (markerRect.left - mirrorRect.left) - textarea.scrollLeft,
+    y: rect.top + (markerRect.top - mirrorRect.top) - textarea.scrollTop + parseFloat(style.lineHeight || "20"),
+  };
+  document.body.removeChild(mirror);
+  return coords;
+}
+
+let selSnap = null; // {start, end} snapped char range currently targeted by the popup
+
+function closeSuggestPopup() {
+  document.getElementById("suggest-popup").hidden = true;
+  selSnap = null;
+}
+
+function applySuggestion(text) {
+  const ta = document.getElementById("f-text");
+  if (!selSnap) return;
+  const scrollTop = ta.scrollTop;
+  ta.focus();
+  ta.setRangeText(text, selSnap.start, selSnap.end, "end");
+  ta.scrollTop = scrollTop;
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  closeSuggestPopup();
+}
+
+function showSuggestPopup() {
+  const ta = document.getElementById("f-text");
+  if (ta.readOnly) return;
+  const selStart = ta.selectionStart, selEnd = ta.selectionEnd;
+  if (selStart === selEnd) { closeSuggestPopup(); return; }
+  const curTokens = tokenize(ta.value);
+  if (curTokens.length === 0) return;
+  let selA = curTokens.findIndex(t => t.end > selStart);
+  if (selA === -1) selA = curTokens.length - 1;
+  let selB = selA;
+  for (let k = curTokens.length - 1; k >= 0; k--) {
+    if (curTokens[k].start < selEnd) { selB = k; break; }
+  }
+  selB += 1; // exclusive
+  if (selB <= selA) selB = selA + 1;
+  selSnap = { start: curTokens[selA].start, end: curTokens[selB - 1].end };
+  ta.selectionStart = selSnap.start; ta.selectionEnd = selSnap.end; // reflect the word-boundary snap
+
+  const engines = [["EasyOCR", alignments.easy], ["Tesseract", alignments.tess], ["Surya", alignments.surya]];
+  const candidatesEl = document.getElementById("suggest-candidates");
+  candidatesEl.innerHTML = "";
+  for (const [label, alignment] of engines) {
+    if (!alignment) continue;
+    const proj = projectSelection(alignment, selA, selB);
+    const row = document.createElement("div");
+    if (proj === null) {
+      row.className = "suggest-cand no-match";
+      row.innerHTML = `<span class="suggest-cand-label">${esc(label)}</span><span class="suggest-cand-text">no clear match</span>`;
+    } else {
+      row.className = "suggest-cand";
+      row.innerHTML = `<span class="suggest-cand-label">${esc(label)}</span><span class="suggest-cand-text">${proj ? esc(proj) : "<em>(delete)</em>"}</span>`;
+      row.onclick = () => applySuggestion(proj);
+    }
+    candidatesEl.appendChild(row);
+  }
+
+  const coords = getCaretCoords(ta, selStart);
+  const popup = document.getElementById("suggest-popup");
+  popup.hidden = false;
+  const maxLeft = window.innerWidth - popup.offsetWidth - 12;
+  const maxTop = window.innerHeight - popup.offsetHeight - 12;
+  popup.style.left = Math.max(8, Math.min(coords.x, maxLeft)) + "px";
+  popup.style.top = Math.max(8, Math.min(coords.y, maxTop)) + "px";
+  document.getElementById("suggest-custom-input").value = ta.value.slice(selSnap.start, selSnap.end);
+}
+
+let selectDebounce = null;
+document.getElementById("f-text").addEventListener("mouseup", () => {
+  clearTimeout(selectDebounce);
+  selectDebounce = setTimeout(showSuggestPopup, 120);
+});
+document.getElementById("f-text").addEventListener("keyup", (e) => {
+  if (["Shift", "Control", "Alt", "Meta"].includes(e.key) || e.shiftKey || (e.key.startsWith("Arrow"))) {
+    clearTimeout(selectDebounce);
+    selectDebounce = setTimeout(showSuggestPopup, 120);
+  }
+});
+document.getElementById("suggest-custom-apply").onclick = () => {
+  applySuggestion(document.getElementById("suggest-custom-input").value);
+};
+document.getElementById("suggest-custom-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); document.getElementById("suggest-custom-apply").click(); }
+});
+document.addEventListener("mousedown", (e) => {
+  const popup = document.getElementById("suggest-popup");
+  if (!popup.hidden && !popup.contains(e.target) && e.target.id !== "f-text") closeSuggestPopup();
+});
+document.addEventListener("scroll", () => closeSuggestPopup(), true);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeSuggestPopup();
+});
+
+/* ---------------- layout: slot, resize, zoom, font size, mobile layering ---------------- */
+
+const mobileQuery = window.matchMedia("(max-width: 768px)");
+
+function loadLayoutState() {
+  try {
+    return Object.assign(
+      { slot: "right", panelW: null, panelH: null, mainW: null, mainH: null, zoom: 1, fontSize: 1.15 },
+      JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}")
+    );
+  } catch { return { slot: "right", panelW: null, panelH: null, mainW: null, mainH: null, zoom: 1, fontSize: 1.15 }; }
+}
+const layoutState = loadLayoutState();
+function saveLayoutState() {
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(layoutState));
+}
+
+function applyStoredSizes() {
+  const panel = document.getElementById("page-panel");
+  const main = document.querySelector("#workspace main");
+  const rowSlot = layoutState.slot === "left" || layoutState.slot === "right";
+  if (layoutState.panelW && rowSlot) panel.style.width = layoutState.panelW + "px";
+  if (layoutState.panelH && !rowSlot) panel.style.height = layoutState.panelH + "px";
+  if (layoutState.mainW && rowSlot) main.style.width = layoutState.mainW + "px";
+  if (layoutState.mainH && !rowSlot) main.style.height = layoutState.mainH + "px";
+}
+
+function setSlot(slot) {
+  layoutState.slot = slot;
+  document.getElementById("workspace").dataset.slot = slot;
+  // a size saved for one orientation (e.g. panel width for a side slot) doesn't
+  // apply to the other orientation (height, for a stacked slot) - let it re-default
+  const panel = document.getElementById("page-panel");
+  const main = document.querySelector("#workspace main");
+  panel.style.width = ""; panel.style.height = "";
+  main.style.width = ""; main.style.height = "";
+  applyStoredSizes();
+  saveLayoutState();
+}
+
+function applyZoom() {
+  const img = document.getElementById("page-img");
+  if (img.naturalWidth) img.style.width = (img.naturalWidth * layoutState.zoom) + "px";
+}
+function applyFontSize() {
+  document.documentElement.style.setProperty("--review-font-size", layoutState.fontSize + "rem");
+}
+
+function setupResizeObservers() {
+  const panel = document.getElementById("page-panel");
+  const main = document.querySelector("#workspace main");
+  const ro = new ResizeObserver((entries) => {
+    if (mobileQuery.matches) return; // mobile uses fixed full-screen layers, not manual sizing
+    const rowSlot = layoutState.slot === "left" || layoutState.slot === "right";
+    for (const entry of entries) {
+      const w = Math.round(entry.contentRect.width), h = Math.round(entry.contentRect.height);
+      if (w <= 0 || h <= 0) continue; // spurious 0-size callbacks happen during hide/teardown - ignore
+      if (entry.target === panel) {
+        if (rowSlot) layoutState.panelW = w; else layoutState.panelH = h;
+      } else if (entry.target === main) {
+        if (rowSlot) layoutState.mainW = w; else layoutState.mainH = h;
+      }
+    }
+    saveLayoutState();
+  });
+  ro.observe(panel);
+  ro.observe(main);
+}
+
+function nearestSlot(x, y) {
+  const distLeft = x, distRight = window.innerWidth - x;
+  const distTop = y, distBottom = window.innerHeight - y;
+  const min = Math.min(distLeft, distRight, distTop, distBottom);
+  return min === distLeft ? "left" : min === distRight ? "right" : min === distTop ? "top" : "bottom";
+}
+
+function slotRect(slot) {
+  const ws = document.getElementById("workspace").getBoundingClientRect();
+  if (slot === "right") return { left: ws.left + ws.width / 2, top: ws.top, width: ws.width / 2, height: ws.height };
+  if (slot === "left") return { left: ws.left, top: ws.top, width: ws.width / 2, height: ws.height };
+  if (slot === "top") return { left: ws.left, top: ws.top, width: ws.width, height: ws.height * 0.4 };
+  return { left: ws.left, top: ws.top + ws.height * 0.6, width: ws.width, height: ws.height * 0.4 };
+}
+
+function showDockPreview(slot) {
+  const el = document.getElementById("dock-preview");
+  const r = slotRect(slot);
+  el.style.left = r.left + "px"; el.style.top = r.top + "px";
+  el.style.width = r.width + "px"; el.style.height = r.height + "px";
+  el.classList.add("show");
+}
+function hideDockPreview() {
+  document.getElementById("dock-preview").classList.remove("show");
+}
+
+function setupDragToReposition() {
+  const header = document.getElementById("page-panel-header");
+  let startX, startY, dragging = false;
+  header.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button")) return;
+    startX = e.clientX; startY = e.clientY; dragging = false;
+    header.setPointerCapture(e.pointerId);
+    const onMove = (ev) => {
+      if (!dragging && (Math.abs(ev.clientX - startX) > 6 || Math.abs(ev.clientY - startY) > 6)) {
+        dragging = true;
+        header.classList.add("dragging");
+      }
+      if (dragging) showDockPreview(nearestSlot(ev.clientX, ev.clientY));
+    };
+    const onUp = (ev) => {
+      header.removeEventListener("pointermove", onMove);
+      header.removeEventListener("pointerup", onUp);
+      header.classList.remove("dragging");
+      hideDockPreview();
+      if (!dragging) return;
+      setSlot(nearestSlot(ev.clientX, ev.clientY));
+    };
+    header.addEventListener("pointermove", onMove);
+    header.addEventListener("pointerup", onUp);
+    header.addEventListener("pointercancel", onUp);
+  });
+}
+
+function updateMobileLayerButtons() {
+  const panelOpen = !document.getElementById("page-panel").hidden;
+  document.getElementById("layer-toggle").hidden = !mobileQuery.matches || !panelOpen;
+}
+
+function toggleLayer() {
+  const panel = document.getElementById("page-panel");
+  const main = document.querySelector("#workspace main");
+  const panelIsFg = panel.classList.contains("layer-fg");
+  panel.classList.toggle("layer-fg", !panelIsFg);
+  panel.classList.toggle("layer-bg", panelIsFg);
+  main.classList.toggle("layer-bg", !panelIsFg);
+  main.classList.toggle("layer-fg", panelIsFg);
+  document.getElementById("layer-toggle").textContent = panelIsFg ? "Bring to front" : "Send to back";
+}
+
 function renderPageView() {
   if (!current || !current.page_image_url) return;
   const img = document.getElementById("page-img");
   const highlight = document.getElementById("page-highlight");
   highlight.hidden = true;
   img.onload = () => {
+    applyZoom();
     if (!current.bbox) return;
     const [x0, y0, x1, y1] = current.bbox;
     const w = img.naturalWidth, h = img.naturalHeight;
@@ -301,23 +800,48 @@ function renderPageView() {
 function openPageView() {
   if (!current || !current.page_image_url) return;
   renderPageView();
-  document.getElementById("page-panel").classList.add("expanded");
-  document.getElementById("page-panel-tab").hidden = true; // the expanded panel occupies the same edge; avoid overlapping it
+  const panel = document.getElementById("page-panel");
+  const main = document.querySelector("#workspace main");
+  panel.hidden = false;
+  document.getElementById("page-panel-tab").hidden = true;
+  if (mobileQuery.matches) {
+    panel.classList.add("layer-fg"); panel.classList.remove("layer-bg");
+    main.classList.add("layer-bg"); main.classList.remove("layer-fg");
+    document.getElementById("layer-toggle").textContent = "Send to back";
+  }
+  updateMobileLayerButtons();
 }
 function closePageView() {
-  document.getElementById("page-panel").classList.remove("expanded");
+  const panel = document.getElementById("page-panel");
+  const main = document.querySelector("#workspace main");
+  panel.hidden = true;
+  panel.classList.remove("layer-fg", "layer-bg");
+  main.classList.remove("layer-fg", "layer-bg");
   document.getElementById("page-panel-tab").hidden = !current || !current.page_image_url;
+  updateMobileLayerButtons();
 }
 function togglePageView() {
-  if (document.getElementById("page-panel").classList.contains("expanded")) closePageView();
+  if (!document.getElementById("page-panel").hidden) closePageView();
   else openPageView();
 }
 document.getElementById("btn-view-page").onclick = openPageView;
 document.getElementById("f-img").onclick = openPageView;
 document.getElementById("page-panel-tab").onclick = togglePageView;
 document.getElementById("page-panel-close").onclick = closePageView;
+document.getElementById("layer-toggle").onclick = toggleLayer;
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closePageView();
+});
+
+document.getElementById("zoom-slider").addEventListener("input", (e) => {
+  layoutState.zoom = parseFloat(e.target.value);
+  applyZoom();
+  saveLayoutState();
+});
+document.getElementById("font-slider").addEventListener("input", (e) => {
+  layoutState.fontSize = parseFloat(e.target.value);
+  applyFontSize();
+  saveLayoutState();
 });
 
 document.getElementById("btn-looks-good").onclick = () => {
@@ -340,8 +864,19 @@ document.getElementById("name-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("name-submit").click();
 });
 
+// init layout: apply persisted slot/sizes/zoom/font before first paint of real content
+document.getElementById("workspace").dataset.slot = layoutState.slot;
+document.getElementById("zoom-slider").value = layoutState.zoom;
+document.getElementById("font-slider").value = layoutState.fontSize;
+applyFontSize();
+applyStoredSizes();
+setupResizeObservers();
+setupDragToReposition();
+mobileQuery.addEventListener("change", updateMobileLayerButtons);
+
 renderBadge();
 if (reviewerName()) {
+  hideNameOverlay();
   refreshStats();
   loadNext();
 } else {

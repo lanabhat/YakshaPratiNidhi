@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lipi-Sampada</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="#/">Lipi-Sampada</a>
+  <nav>
+    <a href="#/">Library</a>
+    <a href="#/admin" id="nav-admin" hidden>Admin <span id="admin-badge" class="badge" hidden></span></a>
+  </nav>
+  <div id="who"></div>
+</header>
+<main id="view"></main>
+<div id="modal" hidden><div class="modal-card"><button class="modal-x" id="modal-x">&times;</button><div id="modal-body"></div></div></div>
+<div id="suggest-popup" hidden>
+  <div class="suggest-title">Replace selection with:</div>
+  <div id="suggest-candidates"></div>
+  <div class="suggest-custom">
+    <input type="text" id="suggest-custom-input" placeholder="Type a replacement…">
+    <button class="btn" id="suggest-custom-apply">Use</button>
+  </div>
+</div>
+<div id="toast"></div>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -157,6 +157,35 @@ def next_snippet(conn: sqlite3.Connection, reviewer: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def adjacent_snippet(conn: sqlite3.Connection, snippet_id: str, direction: str) -> sqlite3.Row | None:
+    """The next/previous snippet in page order (SQLite rowid, which matches
+    seeding order = page-processing order) regardless of review status —
+    lets a reviewer browse back/forward, not just work the pending queue.
+    Returns None at a boundary (first/last snippet)."""
+    row = conn.execute("SELECT rowid FROM snippets WHERE id = ?", (snippet_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no such snippet: {snippet_id}")
+    op = "<" if direction == "prev" else ">"
+    order = "DESC" if direction == "prev" else "ASC"
+    return conn.execute(
+        f"SELECT * FROM snippets WHERE rowid {op} ? ORDER BY rowid {order} LIMIT 1",
+        (row["rowid"],),
+    ).fetchone()
+
+
+def position_info(conn: sqlite3.Connection, snippet_id: str) -> tuple[int, int]:
+    """1-based (position, total) of a snippet in the same page-order used by
+    adjacent_snippet, for a "12 of 60" style label."""
+    total = conn.execute("SELECT COUNT(*) AS n FROM snippets").fetchone()["n"]
+    row = conn.execute("SELECT rowid FROM snippets WHERE id = ?", (snippet_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no such snippet: {snippet_id}")
+    position = conn.execute(
+        "SELECT COUNT(*) AS n FROM snippets WHERE rowid <= ?", (row["rowid"],)
+    ).fetchone()["n"]
+    return position, total
+
+
 def submit_review(
     conn: sqlite3.Connection, snippet_id: str, reviewer: str, submitted_text: str, is_expert: bool
 ) -> str:
