@@ -72,10 +72,6 @@
   .progress-thumb .thumb-label { font-size: 0.65rem; text-align: center; padding: 0.15rem; color: #999; }
   .progress-thumb.done .thumb-label { color: #7ee08a; }
   #progress-summary { font-size: 0.85rem; color: #999; margin-bottom: 0.25rem; }
-  #progress-text-panel {
-    margin-top: 0.75rem; background: #17171a; border-radius: 8px; padding: 0.75rem; font-size: 0.95rem;
-    max-height: 30vh; overflow: auto; white-space: pre-wrap;
-  }
   #review-toolbar { display: flex; gap: 0.8rem; align-items: center; margin: 0.75rem 0; flex-wrap: wrap; font-size: 0.82rem; color: #999; }
   #review-toolbar label { display: flex; align-items: center; gap: 0.4rem; }
   #page-canvas { background: #333; border-radius: 6px; cursor: crosshair; max-width: 100%; }
@@ -113,6 +109,21 @@
      hidden while it's open, so it gets the entire browser viewport. */
   #view-editor { display: flex; flex-direction: column; height: 100vh; }
   #view-editor[hidden] { display: none; }
+  /* #view-ocr-review: same "real page, not a popup" pattern, for reviewing a page's snippets/text
+     with enough room to actually see the image next to the text - a modal side panel was too cramped. */
+  #view-ocr-review { display: flex; flex-direction: column; height: 100vh; }
+  #view-ocr-review[hidden] { display: none; }
+  #ocr-review-body { flex: 1 1 auto; overflow: auto; padding: 1rem 1.2rem 2.5rem; }
+  /* left: the full page image, sticky so it stays put while the snippet column scrolls; right: the
+     snippet cards - same split as the review app's own page view (web/style.css .page-layout). */
+  .ocr-page-layout { display: grid; grid-template-columns: minmax(280px, 42%) 1fr; gap: 1.2rem; align-items: start; max-width: 1400px; margin: 0 auto; }
+  @media (max-width: 900px) { .ocr-page-layout { grid-template-columns: 1fr; } }
+  .ocr-page-img { position: sticky; top: 0.5rem; background: #fff; border-radius: 8px; padding: 0.4rem; max-height: calc(100vh - 8rem); overflow: auto; }
+  .ocr-page-img img { width: 100%; display: block; }
+  .ocr-snip { background: #1a1a1c; border: 1px solid #2a2a2c; border-radius: 10px; padding: 0.9rem; margin-bottom: 1rem; }
+  .ocr-snip img { max-width: 100%; max-height: 220px; background: #fff; border-radius: 6px; display: block; margin-bottom: 0.5rem; }
+  .ocr-snip textarea { width: 100%; font-size: 1.15rem; font-family: inherit; line-height: 1.6; padding: 0.5rem; border-radius: 6px; border: 1px solid #333; background: #111; color: #eee; }
+  .ocr-snip .ocr-snip-actions { margin-top: 0.5rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   .ed-topbar {
     display: flex; align-items: center; gap: 0.9rem; padding: 0.6rem 1rem; background: #1a1a1c;
     border-bottom: 1px solid #2a2a2c; flex-wrap: wrap;
@@ -246,7 +257,6 @@
     <h2 id="progress-title"></h2>
     <div id="progress-summary"></div>
     <div id="progress-grid"></div>
-    <div id="progress-text-panel" hidden></div>
   </div>
 </div>
 
@@ -329,6 +339,18 @@
     </div></div></div>
   </div>
   <div id="review-pages-strip"></div>
+</section>
+
+<section id="view-ocr-review" hidden>
+  <div class="ed-topbar">
+    <button class="btn" id="ocr-review-close">&larr; Back to queue</button>
+    <h2 id="ocr-review-title"></h2>
+    <button class="btn" id="ocr-review-prev">&larr; Prev page</button>
+    <button class="btn" id="ocr-review-next">Next page &rarr;</button>
+    <button class="btn btn-primary" id="ocr-review-fix">Re-crop / enhance &amp; re-OCR this page</button>
+  </div>
+  <div id="ocr-review-summary" style="padding:0.5rem 1.2rem 0; color:#888; font-size:0.85rem;"></div>
+  <div id="ocr-review-body"></div>
 </section>
 
 <div id="toast"></div>
@@ -554,7 +576,7 @@ async function loadQueue() {
         ${it.status === "paused" ? `<button class="btn btn-primary" data-resume="${it.id}">Resume OCR</button>` : ""}
         ${["ocr_running", "paused", "done", "failed"].includes(it.status) && it.run_dir ? `<button class="btn" data-progress="${it.id}">View progress / fix pages</button>` : ""}
         ${it.status === "failed" ? `<button class="btn" data-retry="${it.id}">Retry</button>` : ""}
-        ${it.status === "done" ? `<button class="btn" data-retry="${it.id}">Re-run OCR</button>` : ""}
+        ${it.status === "done" ? `<button class="btn" data-retry="${it.id}" title="Resumes OCR - pages already read successfully are skipped, only the rest are retried">Resume OCR</button>` : ""}
         ${it.status === "done" ? publishButton("local", it) + " " + publishButton("web", it) : ""}
       </td>
     </tr>
@@ -609,7 +631,7 @@ async function refreshQueueBadge() {
 }
 setInterval(refreshQueueBadge, 6000);
 
-/* ---------------- OCR progress view ---------------- */
+/* ---------------- OCR progress view (page grid modal) ---------------- */
 let progressItemId = null;
 let progressPollTimer = null;
 
@@ -622,7 +644,6 @@ function parsePageFilename(filename) {
 async function openProgress(itemId) {
   progressItemId = itemId;
   document.getElementById("progress-modal").hidden = false;
-  document.getElementById("progress-text-panel").hidden = true;
   await refreshProgress();
 }
 document.getElementById("progress-close").onclick = () => {
@@ -639,11 +660,13 @@ async function refreshProgress() {
   const snippetNote = data.current_snippet_total
     ? ` (page ${data.processed_page_count + 1}: snippet ${data.current_snippet_index}/${data.current_snippet_total})`
     : "";
-  progressData = data;
   const re = data.reocr;
   const reNote = re ? (re.state === "running" ? ` — re-reading page ${re.page}…` : re.state === "done" ? ` — ${re.message}` : ` — re-read failed: ${re.message}`) : "";
+  const sre = data.snippet_reocr;
+  const sreNote = sre ? (sre.state === "running" ? ` — trying other OCR engines on page ${sre.page}${sre.side} #${sre.seq}…`
+    : sre.state === "done" ? ` — ${sre.message}` : ` — snippet re-read failed: ${sre.message}`) : "";
   document.getElementById("progress-summary").textContent =
-    `${data.processed_page_count} / ${data.page_count || "?"} pages processed${snippetNote} — ${data.status.replaceAll("_", " ")}${reNote}`;
+    `${data.processed_page_count} / ${data.page_count || "?"} pages processed${snippetNote} — ${data.status.replaceAll("_", " ")}${reNote}${sreNote}`;
 
   const grid = document.getElementById("progress-grid");
   grid.innerHTML = data.pages.map(filename => {
@@ -658,38 +681,161 @@ async function refreshProgress() {
     `;
   }).join("");
   grid.querySelectorAll(".progress-thumb").forEach(el => {
-    el.onclick = () => showPageText(data.records_by_page[el.dataset.key] || [], el.dataset.filename);
+    el.onclick = () => {
+      const parsed = parsePageFilename(el.dataset.filename);
+      if (parsed) openOcrReview(progressItemId, parsed.page_number, parsed.side);
+    };
   });
-  if (!document.getElementById("progress-text-panel").hidden && progressShown) showPageText(data.records_by_page[progressShown.key] || [], progressShown.filename, true);
 
   clearTimeout(progressPollTimer);
-  if (data.status === "ocr_running" || (re && re.state === "running")) progressPollTimer = setTimeout(refreshProgress, 3000);
+  if (data.status === "ocr_running" || (re && re.state === "running") || (sre && sre.state === "running")) {
+    progressPollTimer = setTimeout(refreshProgress, 3000);
+  }
 }
 
-let progressData = null, progressShown = null;
-
-function showPageText(records, filename, refreshOnly) {
-  const parsed = parsePageFilename(filename);
-  progressShown = { key: parsed ? `${parsed.page_number}_${parsed.side}` : "", filename };
-  const panel = document.getElementById("progress-text-panel");
-  panel.hidden = false;
-  const busy = progressData && (progressData.status === "ocr_running" || (progressData.reocr && progressData.reocr.state === "running"));
-  const fixBtn = parsed ? `<button class="btn btn-primary" id="fix-page-btn" ${busy ? "disabled" : ""}
-      title="${busy ? "Pause the OCR (or wait for the re-read) first" : "Re-crop, straighten or adjust brightness, then read this page again"}">Re-crop / enhance &amp; re-OCR page ${parsed.page_number}</button>` : "";
-  panel.innerHTML = `<b>${esc(filename)}</b> ${fixBtn}${busy ? ` <span style="color:#888">(pause the OCR to fix a page)</span>` : ""}<br><br>` +
-    (records.length ? records.map(r => `<div style="margin-bottom:0.6rem;">${esc((r.refined && r.refined.text) || r.easyocr.text)}</div>`).join("")
-                    : `<i style="color:#888">not read yet</i>`);
-  const b = document.getElementById("fix-page-btn");
-  if (b && !busy) b.onclick = () => {
-    document.getElementById("progress-modal").hidden = true;
-    clearTimeout(progressPollTimer);
-    openReview(progressItemId, parsed.page_number - 1, true);
-  };
+/* ---------------- OCR review (snippets/text for one page) - a real page, not a popup, so there's
+   room to actually see the image next to the text; see #/edit/... above for the same pattern. ---------------- */
+function ocrHashFor(itemId, pageNumber, side) { return `#/ocr-review/${itemId}/${pageNumber}/${side}`; }
+function ocrParseHash() {
+  const m = location.hash.match(/^#\/ocr-review\/(\d+)\/(\d+)\/(\w+)$/);
+  return m ? { itemId: +m[1], pageNumber: +m[2], side: m[3] } : null;
 }
+let ocrSuppressHash = false;
+function ocrSetHash(itemId, pageNumber, side) {
+  const target = ocrHashFor(itemId, pageNumber, side);
+  if (location.hash !== target) { ocrSuppressHash = true; location.hash = target; }
+}
+
+let ocrReviewItemId = null, ocrReviewKey = null, ocrReviewPollTimer = null;
+
+async function openOcrReview(itemId, pageNumber, side, fromHash) {
+  ocrReviewItemId = itemId;
+  ocrReviewKey = { pageNumber, side };
+  document.getElementById("progress-modal").hidden = true;
+  clearTimeout(progressPollTimer);
+  document.querySelector("header").hidden = true;
+  document.querySelector("main").hidden = true;
+  document.getElementById("view-ocr-review").hidden = false;
+  if (!fromHash) ocrSetHash(itemId, pageNumber, side);
+  await refreshOcrReview();
+}
+function closeOcrReview() {
+  clearTimeout(ocrReviewPollTimer);
+  document.getElementById("view-ocr-review").hidden = true;
+  document.querySelector("header").hidden = false;
+  document.querySelector("main").hidden = false;
+  if (ocrParseHash()) { ocrSuppressHash = true; history.replaceState(null, "", location.pathname + location.search); }
+  loadQueue();
+}
+document.getElementById("ocr-review-close").onclick = closeOcrReview;
+
+async function refreshOcrReview() {
+  if (ocrReviewItemId == null || document.getElementById("view-ocr-review").hidden) return;
+  const r = await fetch(`/api/queue/${ocrReviewItemId}/progress`);
+  const data = await r.json();
+  const { pageNumber, side } = ocrReviewKey;
+  const key = `${pageNumber}_${side}`;
+  const records = data.records_by_page[key] || [];
+
+  document.getElementById("ocr-review-title").textContent = `${data.book_id} — page ${pageNumber}${side}`;
+
+  const busy = data.status === "ocr_running" || (data.reocr && data.reocr.state === "running") || (data.snippet_reocr && data.snippet_reocr.state === "running");
+  const sre = data.snippet_reocr;
+  const sreNote = sre ? (sre.state === "running" ? ` — trying other OCR engines on page ${sre.page}${sre.side} #${sre.seq}…`
+    : sre.state === "done" ? ` — ${sre.message}` : ` — snippet re-read failed: ${sre.message}`) : "";
+  document.getElementById("ocr-review-summary").textContent =
+    `${records.length} snippet${records.length === 1 ? "" : "s"}${busy ? " — pause the OCR to edit" : ""}${sreNote}`;
+
+  const fixBtn = document.getElementById("ocr-review-fix");
+  fixBtn.disabled = busy;
+  fixBtn.title = busy ? "Pause the OCR (or wait for the re-read) first" : "Re-crop, straighten or adjust brightness, then read this page again";
+  fixBtn.onclick = () => { closeOcrReview(); openReview(ocrReviewItemId, pageNumber - 1, true); };
+
+  const orderedPages = data.pages.map(parsePageFilename).filter(Boolean);
+  const curIdx = orderedPages.findIndex(p => p.page_number === pageNumber && p.side === side);
+  const prevBtn = document.getElementById("ocr-review-prev"), nextBtn = document.getElementById("ocr-review-next");
+  prevBtn.disabled = curIdx <= 0;
+  nextBtn.disabled = curIdx === -1 || curIdx >= orderedPages.length - 1;
+  prevBtn.onclick = () => { const p = orderedPages[curIdx - 1]; openOcrReview(ocrReviewItemId, p.page_number, p.side); };
+  nextBtn.onclick = () => { const p = orderedPages[curIdx + 1]; openOcrReview(ocrReviewItemId, p.page_number, p.side); };
+
+  const bookId = data.book_id;
+  const body = document.getElementById("ocr-review-body");
+  // The full page image: prefer any snippet's page_image_path (present once OCR has run), else fall
+  // back to the raw rasterized page filename (so the image still shows before OCR gets to this page).
+  const rawFilename = data.pages.find((f) => { const p = parsePageFilename(f); return p && p.page_number === pageNumber && p.side === side; });
+  const pageImagePath = (records[0] && records[0].page_image_path) || (rawFilename && `pages/${rawFilename}`);
+  const pageImg = pageImagePath ? `<div class="ocr-page-img"><img src="/output/${esc(bookId)}/${esc(pageImagePath)}" alt="full page"></div>` : "<div></div>";
+  const snipsHtml = records.length ? records.map(r => {
+    const ranEngines = ["easyocr", "tesseract", "surya"].filter((e) => r[e]);
+    const shown = (r.refined && r.refined.text) || (ranEngines[0] && r[ranEngines[0]].text) || "";
+    const allThree = ranEngines.length === 3;
+    const snipKey = `${r.page_number}:${r.side}:${r.paragraph_sequence}`;
+    const tryBtn = allThree ? "" : `<button class="btn" data-try-more="${esc(snipKey)}" ${busy ? "disabled" : ""}
+        title="${busy ? "Pause the OCR (or wait for the re-read) first" : `Currently read with: ${ranEngines.join(", ") || "nothing"} - runs all 3 engines and re-refines`}">Try other OCR engines</button>`;
+    const img = r.image_patch_path ? `<img src="/output/${esc(bookId)}/${esc(r.image_patch_path)}" loading="lazy">` : "";
+    return `<div class="ocr-snip" data-snip="${esc(snipKey)}">
+      ${img}
+      <textarea lang="kn" data-snip-text rows="3" ${busy ? "disabled" : ""}>${esc(shown)}</textarea>
+      <div class="ocr-snip-actions">
+        <button class="btn btn-primary" data-save-text="${esc(snipKey)}" disabled>Save text</button>
+        ${tryBtn}
+      </div>
+    </div>`;
+  }).join("") : `<i style="color:#888">not read yet</i>`;
+  body.innerHTML = `<div class="ocr-page-layout">${pageImg}<div id="ocr-review-snips">${snipsHtml}</div></div>`;
+
+  body.querySelectorAll("[data-snip-text]").forEach((ta) => {
+    const saveBtn = ta.closest("[data-snip]").querySelector("[data-save-text]");
+    ta.addEventListener("input", () => {
+      saveBtn.disabled = busy || ta.value.trim() === ta.defaultValue.trim() || !ta.value.trim();
+    });
+  });
+  body.querySelectorAll("[data-save-text]").forEach((btn) => {
+    btn.onclick = async () => {
+      const [page_number, side, seq] = btn.dataset.saveText.split(":");
+      const ta = btn.closest("[data-snip]").querySelector("[data-snip-text]");
+      const r = await fetch(`/api/queue/${ocrReviewItemId}/snippets/edit-text`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ page_number: parseInt(page_number, 10), side, seq: parseInt(seq, 10), text: ta.value.trim() }),
+      });
+      if (r.ok) { toast("Saved"); refreshOcrReview(); }
+      else { toast((await r.json().catch(() => ({}))).detail || "Could not save"); }
+    };
+  });
+  body.querySelectorAll("[data-try-more]").forEach((btn) => {
+    btn.onclick = async () => {
+      const [page_number, side, seq] = btn.dataset.tryMore.split(":");
+      const r = await fetch(`/api/queue/${ocrReviewItemId}/snippets/reocr-more`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ page_number: parseInt(page_number, 10), side, seq: parseInt(seq, 10) }),
+      });
+      if (r.ok) { toast("Trying other OCR engines…"); refreshOcrReview(); }
+      else { toast((await r.json().catch(() => ({}))).detail || "Could not start"); }
+    };
+  });
+
+  clearTimeout(ocrReviewPollTimer);
+  if (busy) ocrReviewPollTimer = setTimeout(refreshOcrReview, 3000);
+}
+
+window.addEventListener("hashchange", () => {
+  if (ocrSuppressHash) { ocrSuppressHash = false; return; }
+  const r = ocrParseHash();
+  if (r) openOcrReview(r.itemId, r.pageNumber, r.side, true);
+  else if (!document.getElementById("view-ocr-review").hidden) closeOcrReview();
+});
 
 const initialEdit = edParseHash();
+const initialOcrReview = ocrParseHash();
 if (initialEdit) {
   openReview(initialEdit.itemId, initialEdit.idx, false, true).catch(() => {
+    toast("Could not reopen that page - it may no longer exist");
+    location.hash = "";
+    showView("queue");
+  });
+} else if (initialOcrReview) {
+  openOcrReview(initialOcrReview.itemId, initialOcrReview.pageNumber, initialOcrReview.side, true).catch(() => {
     toast("Could not reopen that page - it may no longer exist");
     location.hash = "";
     showView("queue");

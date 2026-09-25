@@ -55,6 +55,7 @@ _queue_conn = qdb.open_queue_db(QUEUE_DB_PATH)
 _ocr_lock = threading.Lock()
 _pause_requested: set[int] = set()
 _reocr_state: dict[int, dict] = {}  # item_id -> {"page": n, "state": running|done|error, "message": str}
+_snippet_reocr_state: dict[int, dict] = {}  # item_id -> {"page","side","seq","state","message"}
 
 
 class OcrPaused(BaseException):
@@ -220,7 +221,7 @@ def enqueue_bulk(req: BulkEnqueueRequest):
 def retry_item(item_id: int):
     """Also works from STATUS_DONE, not just STATUS_FAILED - a "done" book's pages are always all
     approved already, so this re-queues it for OCR (resume=True skips whatever already succeeded).
-    Useful both as a manual "re-run OCR" safety valve and to recover a book that reached DONE despite
+    Useful both as a manual "resume OCR" safety valve and to recover a book that reached DONE despite
     some pages having failed, from before per-page OCR failures were tracked (see _run_ocr_locked)."""
     with _db_lock:
         item = qdb.get_item(_queue_conn, item_id)
@@ -559,6 +560,28 @@ def _replace_page_records(result_path: Path, page_number: int, new_records: list
     tmp.replace(result_path)
 
 
+def _replace_snippet_record(result_path: Path, page_number: int, side: str, seq: int, new_record: dict):
+    """Same read-modify-atomic-write pattern as _replace_page_records, but swaps exactly one snippet
+    (matched by page_number/side/paragraph_sequence) instead of a whole page's worth."""
+    old = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else []
+    kept = [r for r in old if not (r["page_number"] == page_number and r["side"] == side and r["paragraph_sequence"] == seq)]
+    merged = sorted(kept + [new_record], key=lambda r: (r["page_number"], r["side"], r["paragraph_sequence"]))
+    tmp = result_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(result_path)
+
+
+def _requeue_publish_if_needed(item):
+    """ingest is idempotent and never overwrites text a reviewer touched - safe to re-queue either
+    stage that had already gone out, so a correction reaches wherever it was published."""
+    if item["local_publish_status"] == "published":
+        with _db_lock:
+            qdb.set_publish(_queue_conn, item["id"], "local", None)
+    if item["web_publish_status"] == "published":
+        with _db_lock:
+            qdb.set_publish(_queue_conn, item["id"], "web", "requested")
+
+
 def _reocr_worker(item, page, paths: list[Path]):
     item_id, page_number = item["id"], page["pdf_page_index"] + 1
     run_dir = Path(item["run_dir"])
@@ -580,18 +603,42 @@ def _reocr_worker(item, page, paths: list[Path]):
                     f.unlink()
             except Exception:
                 pass
-        # ingest is idempotent and never overwrites text a reviewer touched - safe to re-queue either
-        # stage that had already gone out, so the corrected page reaches wherever it was published.
-        if item["local_publish_status"] == "published":
-            with _db_lock:
-                qdb.set_publish(_queue_conn, item_id, "local", None)
-        if item["web_publish_status"] == "published":
-            with _db_lock:
-                qdb.set_publish(_queue_conn, item_id, "web", "requested")
+        _requeue_publish_if_needed(item)
         _reocr_state[item_id] = {"page": page_number, "state": "done", "message": f"page {page_number} re-read"}
     except Exception as e:
         traceback.print_exc()
         _reocr_state[item_id] = {"page": page_number, "state": "error", "message": str(e)}
+    finally:
+        _ocr_lock.release()
+
+
+def _reocr_snippet_worker(item, page_number: int, side: str, seq: int):
+    """"Try other OCR engines" on one already-OCR'd snippet - see pipeline.reocr_snippet."""
+    item_id = item["id"]
+    run_dir = Path(item["run_dir"])
+    try:
+        result_path = run_dir / "result.json"
+        records = json.loads(result_path.read_text(encoding="utf-8"))
+        old_record = next(
+            (r for r in records if r["page_number"] == page_number and r["side"] == side and r["paragraph_sequence"] == seq),
+            None,
+        )
+        if old_record is None:
+            raise RuntimeError(f"no such snippet: page {page_number}{side} #{seq}")
+        cdb = pipeline.refiner.open_corrections_db(run_dir / "corrections.db")
+        try:
+            new_record = pipeline.reocr_snippet(run_dir, old_record, cdb)
+        finally:
+            cdb.close()
+        _replace_snippet_record(result_path, page_number, side, seq, new_record)
+        _requeue_publish_if_needed(item)
+        _snippet_reocr_state[item_id] = {
+            "page": page_number, "side": side, "seq": seq, "state": "done",
+            "message": f"page {page_number}{side} #{seq} re-read with all 3 engines",
+        }
+    except Exception as e:
+        traceback.print_exc()
+        _snippet_reocr_state[item_id] = {"page": page_number, "side": side, "seq": seq, "state": "error", "message": str(e)}
     finally:
         _ocr_lock.release()
 
@@ -613,6 +660,71 @@ def reocr_page(item_id: int, page_id: int):
     _reocr_state[item_id] = {"page": page["pdf_page_index"] + 1, "state": "running", "message": ""}
     threading.Thread(target=_reocr_worker, args=(item, page, paths), daemon=True).start()
     return {"ok": True, "was_published": item["local_publish_status"] == "published" or item["web_publish_status"] == "published"}
+
+
+class SnippetReocrRequest(BaseModel):
+    page_number: int
+    side: str
+    seq: int
+
+
+@app.post("/api/queue/{item_id}/snippets/reocr-more")
+def reocr_snippet_more(item_id: int, req: SnippetReocrRequest):
+    """"Try other OCR engines" on one snippet, keyed by (page_number, side, seq) since snippets - unlike
+    pages - aren't tracked as their own rows anywhere; they only exist as records in result.json. Always
+    escalates straight to the full 3-engine ensemble (see pipeline.reocr_snippet) - there's no partial/
+    2-engine state to request."""
+    with _db_lock:
+        item = qdb.get_item(_queue_conn, item_id)
+    if item is None:
+        raise HTTPException(404, "no such queue item")
+    if item["status"] not in REOCR_OK_STATUSES:
+        raise HTTPException(409, f"item is {item['status']}; pause the OCR first, then re-read a snippet")
+    if not item["run_dir"]:
+        raise HTTPException(409, "this book has not been through OCR yet")
+    result_path = Path(item["run_dir"]) / "result.json"
+    records = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else []
+    if not any(r["page_number"] == req.page_number and r["side"] == req.side and r["paragraph_sequence"] == req.seq for r in records):
+        raise HTTPException(404, "no such snippet")
+    if not _ocr_lock.acquire(blocking=False):
+        raise HTTPException(409, "another OCR job is running - try again when it finishes or is paused")
+    _snippet_reocr_state[item_id] = {"page": req.page_number, "side": req.side, "seq": req.seq, "state": "running", "message": ""}
+    threading.Thread(target=_reocr_snippet_worker, args=(item, req.page_number, req.side, req.seq), daemon=True).start()
+    return {"ok": True}
+
+
+class SnippetEditRequest(BaseModel):
+    page_number: int
+    side: str
+    seq: int
+    text: str
+
+
+@app.post("/api/queue/{item_id}/snippets/edit-text")
+def edit_snippet_text(item_id: int, req: SnippetEditRequest):
+    """Directly overwrites one snippet's text - for confirming/fixing OCR output by eye right here in
+    the Queue/Progress view, without a full publish -> open the review app -> edit -> republish round
+    trip. No OCR runs, so unlike reocr-more this doesn't need _ocr_lock and applies instantly."""
+    with _db_lock:
+        item = qdb.get_item(_queue_conn, item_id)
+    if item is None:
+        raise HTTPException(404, "no such queue item")
+    if not item["run_dir"]:
+        raise HTTPException(409, "this book has not been through OCR yet")
+    if not req.text.strip():
+        raise HTTPException(400, "text cannot be empty")
+    result_path = Path(item["run_dir"]) / "result.json"
+    records = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else []
+    record = next(
+        (r for r in records if r["page_number"] == req.page_number and r["side"] == req.side and r["paragraph_sequence"] == req.seq),
+        None,
+    )
+    if record is None:
+        raise HTTPException(404, "no such snippet")
+    record["refined"] = {"text": req.text, "model": "human-edited"}
+    _replace_snippet_record(result_path, req.page_number, req.side, req.seq, record)
+    _requeue_publish_if_needed(item)
+    return {"ok": True}
 
 
 @app.get("/api/queue/{item_id}/progress")
@@ -647,6 +759,7 @@ def get_progress(item_id: int):
         "records_by_page": records_by_page,
         "book_id": item["book_id"],
         "reocr": _reocr_state.get(item_id),
+        "snippet_reocr": _snippet_reocr_state.get(item_id),
         "publish_status": item["publish_status"],
     }
 

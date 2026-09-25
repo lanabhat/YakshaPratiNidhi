@@ -18,8 +18,10 @@ def status_of(client, item):
     return client.get(f"/api/queue/{item}").json()["item"]["status"]
 
 
-def rec(page, text, side="P"):
-    return {"page_number": page, "side": side, "seq": 1, "easyocr": {"text": text}, "refined": {"text": text}}
+def rec(page, text, side="P", seq=1):
+    return {"page_number": page, "side": side, "paragraph_sequence": seq, "column_index": 0, "bbox": [0, 0, 10, 10],
+            "image_patch_path": f"snippets/p{page}_{seq}.png", "page_image_path": f"pages/p{page}.png",
+            "easyocr": {"text": text}, "tesseract": {"text": text}, "refined": {"text": text}}
 
 
 def test_pause_flags_a_running_book_and_resume_requeues_a_paused_one(client, env):
@@ -204,3 +206,98 @@ def test_reocr_of_a_published_book_queues_it_for_republishing(client, env, monke
     item_row = client.get(f"/api/queue/{item}").json()["item"]
     assert item_row["local_publish_status"] is None  # eligible for the worker's next auto-pickup
     assert item_row["web_publish_status"] == "requested"  # web is never auto-picked-up from NULL
+
+
+def wait_snippet_reocr(client, item, want="done"):
+    for _ in range(100):
+        state = client.get(f"/api/queue/{item}/progress").json()["snippet_reocr"]
+        if state and state["state"] != "running":
+            assert state["state"] == want, state
+            return state
+        time.sleep(0.05)
+    raise AssertionError("snippet re-OCR did not finish")
+
+
+def test_snippet_reocr_replaces_only_that_snippet_and_keeps_the_rest(client, env, monkeypatch, tmp_path):
+    mod = env[0]
+    item, pages, work, run_dir = _paused_book_with_ocr(env, tmp_path, "s_one")
+    seen = []
+    monkeypatch.setattr(mod.pipeline, "reocr_snippet", lambda rd, record, cdb: (seen.append(record["page_number"]), rec(record["page_number"], "ALL 3 ENGINES"))[1])
+    r = client.post(f"/api/queue/{item}/snippets/reocr-more", json={"page_number": 1, "side": "P", "seq": 1})
+    assert r.status_code == 200
+    wait_snippet_reocr(client, item)
+    texts = {x["page_number"]: x["refined"]["text"] for x in json.loads((run_dir / "result.json").read_text(encoding="utf-8"))}
+    assert texts == {1: "ALL 3 ENGINES", 2: "old two"}
+    assert seen == [1]
+    assert mod._ocr_lock.acquire(blocking=False)  # released afterwards
+    mod._ocr_lock.release()
+
+
+def test_snippet_reocr_is_refused_for_an_unknown_snippet(client, env, tmp_path):
+    item, pages, work, run_dir = _paused_book_with_ocr(env, tmp_path, "s_missing")
+    r = client.post(f"/api/queue/{item}/snippets/reocr-more", json={"page_number": 99, "side": "P", "seq": 1})
+    assert r.status_code == 404
+
+
+def test_snippet_reocr_is_refused_while_the_book_is_running_or_another_job_holds_the_gpu(client, env, tmp_path):
+    mod = env[0]
+    item, pages, work, run_dir = _paused_book_with_ocr(env, tmp_path, "s_busy")
+    set_status(env, item, "ocr_running")
+    assert client.post(f"/api/queue/{item}/snippets/reocr-more", json={"page_number": 1, "side": "P", "seq": 1}).status_code == 409
+    set_status(env, item, "paused")
+    assert mod._ocr_lock.acquire(blocking=False)
+    try:
+        assert client.post(f"/api/queue/{item}/snippets/reocr-more", json={"page_number": 1, "side": "P", "seq": 1}).status_code == 409
+    finally:
+        mod._ocr_lock.release()
+
+
+def test_snippet_reocr_of_a_published_book_queues_it_for_republishing(client, env, monkeypatch, tmp_path):
+    mod = env[0]
+    item, pages, work, run_dir = _paused_book_with_ocr(env, tmp_path, "s_pub")
+    set_status(env, item, "done", local_publish_status="published", web_publish_status="published")
+    monkeypatch.setattr(mod.pipeline, "reocr_snippet", lambda rd, record, cdb: rec(record["page_number"], "NEW"))
+    assert client.post(f"/api/queue/{item}/snippets/reocr-more", json={"page_number": 1, "side": "P", "seq": 1}).status_code == 200
+    wait_snippet_reocr(client, item)
+    item_row = client.get(f"/api/queue/{item}").json()["item"]
+    assert item_row["local_publish_status"] is None
+    assert item_row["web_publish_status"] == "requested"
+
+
+def test_edit_snippet_text_saves_immediately_without_the_ocr_lock(client, env, tmp_path):
+    item, pages, work, run_dir = _paused_book_with_ocr(env, tmp_path, "e_one")
+    r = client.post(f"/api/queue/{item}/snippets/edit-text", json={"page_number": 1, "side": "P", "seq": 1, "text": "fixed by hand"})
+    assert r.status_code == 200
+    records = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+    by_page = {x["page_number"]: x for x in records}
+    assert by_page[1]["refined"] == {"text": "fixed by hand", "model": "human-edited"}
+    assert by_page[2]["refined"]["text"] == "old two"  # untouched
+
+
+def test_edit_snippet_text_works_even_while_ocr_is_running(client, env, tmp_path):
+    # unlike reocr-more, editing text directly needs no GPU/model, so it isn't gated by _ocr_lock/status
+    item, pages, work, run_dir = _paused_book_with_ocr(env, tmp_path, "e_busy")
+    set_status(env, item, "ocr_running")
+    r = client.post(f"/api/queue/{item}/snippets/edit-text", json={"page_number": 1, "side": "P", "seq": 1, "text": "fixed"})
+    assert r.status_code == 200
+
+
+def test_edit_snippet_text_is_refused_for_an_unknown_snippet(client, env, tmp_path):
+    item, pages, work, run_dir = _paused_book_with_ocr(env, tmp_path, "e_missing")
+    r = client.post(f"/api/queue/{item}/snippets/edit-text", json={"page_number": 99, "side": "P", "seq": 1, "text": "x"})
+    assert r.status_code == 404
+
+
+def test_edit_snippet_text_rejects_empty_text(client, env, tmp_path):
+    item, pages, work, run_dir = _paused_book_with_ocr(env, tmp_path, "e_empty")
+    r = client.post(f"/api/queue/{item}/snippets/edit-text", json={"page_number": 1, "side": "P", "seq": 1, "text": "   "})
+    assert r.status_code == 400
+
+
+def test_edit_snippet_text_of_a_published_book_queues_it_for_republishing(client, env, tmp_path):
+    item, pages, work, run_dir = _paused_book_with_ocr(env, tmp_path, "e_pub")
+    set_status(env, item, "done", local_publish_status="published", web_publish_status="published")
+    assert client.post(f"/api/queue/{item}/snippets/edit-text", json={"page_number": 1, "side": "P", "seq": 1, "text": "fixed"}).status_code == 200
+    item_row = client.get(f"/api/queue/{item}").json()["item"]
+    assert item_row["local_publish_status"] is None
+    assert item_row["web_publish_status"] == "requested"

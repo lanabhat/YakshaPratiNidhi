@@ -33,6 +33,22 @@ Punctuation: keep every existing ।/॥ danda mark unless you are certain it is
 
 Respond with ONLY the corrected Kannada text on a single line, nothing else — no explanation, no quotes."""
 
+_ENGINE_LABEL = {"easyocr": "EasyOCR", "tesseract": "Tesseract", "surya": "Surya"}
+
+_SINGLE_PROMPT_TEMPLATE = """You are an expert in Kannada Yakshagana Prasanga texts (traditional verse-drama scripts).
+
+Below is one OCR reading ({engine}) of a single line or paragraph from a scanned Yakshagana Prasanga book. It may contain character-recognition errors, especially: character swaps (e.g. ವ/ಪ, ಳ/ಲ), missing/extra spacing, and OCR misreadings of the verse-end punctuation ।।/॥ (danda marks) as Latin letters or digits like I, II, Il, 1, 2.
+
+Reading: {text}
+
+Task: produce the single best-corrected Kannada Unicode text for this line, using your knowledge of Kannada vocabulary, grammar, and Yakshagana poetic conventions (meter/raga names like ವಾರ್ಧಿಕ, ಸೌರಾಷ್ಟ್ರ, ಭಾವಿನಿ, verse-end markers ॥ with Kannada numerals). Do not invent content the reading doesn't already suggest.
+
+Be conservative: your job is to correct clear OCR mistakes in this one reading, not to rewrite freely. If you are not confident a word is wrong, leave it as-is. Do not "fix" a word into a different valid word just because it looks slightly more natural — an unnecessary change is as bad as leaving a real error uncorrected. Unlike a multi-reading comparison, there is no second or third reading to cross-check this one against - when in doubt, prefer leaving the text as given.
+
+Punctuation: keep every existing ।/॥ danda mark unless you are certain it is a stray OCR artifact — when in doubt, keep it rather than remove it. Only normalize OCR-mangled verse-end markers (I, II, Il, digits, or | standing in for ॥) into proper ॥ marks with Kannada numerals when the Latin-substitute pattern is clear; do not touch danda marks that are already correct.
+
+Respond with ONLY the corrected Kannada text on a single line, nothing else — no explanation, no quotes."""
+
 
 def _consensus_words(easy_text: str, tess_text: str, surya_text: str) -> list[str]:
     """Words appearing identically in at least 2 of the 3 readings.
@@ -97,17 +113,11 @@ def _build_hint(easy_text: str, tess_text: str, surya_text: str, flags: dict) ->
     return ("\n" + "\n".join(lines) + "\n") if lines else "\n"
 
 
-def refine(easy_text: str, tess_text: str, surya_text: str, flags: dict, model: str = OLLAMA_MODEL) -> str:
-    """Raises on failure (including after retries) - callers that need to
-    keep going regardless (e.g. an unattended batch run) should catch this
-    and fall back to fallback_text() rather than lose the whole page/book;
-    see pipeline.process_page."""
-    prompt = _PROMPT_TEMPLATE.format(
-        easy=easy_text or "(empty)",
-        tess=tess_text or "(empty)",
-        surya=surya_text or "(empty)",
-        hint=_build_hint(easy_text, tess_text, surya_text, flags),
-    )
+def _call_ollama(prompt: str, model: str) -> str:
+    """Shared by refine()/refine_single(). Raises on failure (including after
+    retries) - callers that need to keep going regardless (e.g. an
+    unattended batch run) should catch this and fall back to fallback_text()
+    rather than lose the whole page/book; see pipeline.process_page."""
     body = json.dumps(
         {"model": model, "prompt": prompt, "stream": False, "options": {"temperature": 0.1}}
     ).encode("utf-8")
@@ -125,6 +135,38 @@ def refine(easy_text: str, tess_text: str, surya_text: str, flags: dict, model: 
             if attempt < REFINE_RETRIES:
                 time.sleep(2)
     raise last_error
+
+
+def refine(easy_text: str, tess_text: str, surya_text: str, flags: dict, model: str = OLLAMA_MODEL) -> str:
+    prompt = _PROMPT_TEMPLATE.format(
+        easy=easy_text or "(empty)",
+        tess=tess_text or "(empty)",
+        surya=surya_text or "(empty)",
+        hint=_build_hint(easy_text, tess_text, surya_text, flags),
+    )
+    return _call_ollama(prompt, model)
+
+
+def refine_single(text: str, engine: str, model: str = OLLAMA_MODEL) -> str:
+    """Same conservative correction as refine(), but for a single OCR reading with no other engines to
+    cross-check it against. Deliberately not refine() called with the same text three times: that would
+    fabricate a false "these readings agree" hint (_build_hint), overstating confidence that doesn't
+    actually exist here.
+
+    NOT currently called by pipeline.ocr_snippet's default single-engine path: a real accuracy check
+    against human-finalized text found it isn't reliably better than the raw reading (a wash on body/
+    verse text, worse on short non-poetic text), so the default path uses the raw reading as-is instead
+    - see ocr_snippet's "raw-single-engine" branch. Kept here, tested, in case a better prompt or a
+    narrower use (e.g. only when the raw reading looks doubtful) makes it worth re-enabling later.
+
+    An empty reading skips the LLM call entirely and returns empty, rather than asking it to correct
+    "(empty)" - with no other reading to ground it, that produced hallucinated (once, non-Kannada)
+    output instead of gracefully recognizing there's nothing there. refine() doesn't need this guard
+    since a real ensemble snippet essentially never has all three readings empty at once."""
+    if not text or not text.strip():
+        return text or ""
+    prompt = _SINGLE_PROMPT_TEMPLATE.format(engine=_ENGINE_LABEL.get(engine, engine), text=text)
+    return _call_ollama(prompt, model)
 
 
 def fallback_text(easy_text: str, tess_text: str, surya_text: str, flags: dict) -> str:
@@ -201,9 +243,9 @@ def log_correction(conn: sqlite3.Connection, record: dict, refined_text: str, mo
             record["page_number"],
             record["side"],
             record["paragraph_sequence"],
-            record["easyocr"]["text"],
-            record["tesseract"]["text"],
-            record["surya"]["text"],
+            record.get("easyocr", {}).get("text"),  # not every engine necessarily ran - see process_page's `engines`
+            record.get("tesseract", {}).get("text"),
+            record.get("surya", {}).get("text"),
             refined_text,
             model,
             record.get("image_patch_path"),

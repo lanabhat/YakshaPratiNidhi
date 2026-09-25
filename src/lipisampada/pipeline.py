@@ -1,6 +1,12 @@
-"""CLI: page(s) -> preprocess -> slice into paragraph snippets -> run
-EasyOCR + Tesseract + Surya on each snippet -> AI-refine via local LLM ->
-write result.json (+ snippet PNGs + a self-correction dictionary DB)."""
+"""CLI: page(s) -> preprocess -> slice into paragraph snippets -> run OCR on each snippet ->
+write result.json (+ snippet PNGs + a self-correction dictionary DB).
+
+Default is Tesseract alone, used as-is with no LLM pass (see ocr_snippet's "raw-single-engine"
+branch - a real accuracy check found the LLM step isn't reliably better than Tesseract's raw text for
+a lone reading). The full EasyOCR + Tesseract + Surya ensemble + AI-refine via local LLM - the original
+behavior, and still demonstrably the most accurate - runs when `engines` is ALL_ENGINES: on demand per
+snippet via reocr_snippet (app 1's "try other OCR engines"), or by passing engines=ALL_ENGINES to
+process_page/run_book directly."""
 
 import argparse
 import json
@@ -16,6 +22,10 @@ from lipisampada.ensemble import compare
 from lipisampada.ocr_engines import run_easyocr, run_surya, run_tesseract
 
 
+ALL_ENGINES = ("easyocr", "tesseract", "surya")
+_RUN_ENGINE = {"easyocr": run_easyocr, "tesseract": run_tesseract, "surya": run_surya}
+
+
 def process_page(
     image_path: Path,
     snippets_dir: Path,
@@ -24,11 +34,23 @@ def process_page(
     refine: bool,
     corrections_db: sqlite3.Connection | None,
     on_snippet=None,
+    engines: tuple[str, ...] = ("tesseract",),
 ) -> list[dict]:
     """on_snippet(index, total), if given, is called after each of this
     page's snippets completes - a page can have a dozen-plus snippets each
     taking real OCR+refine time, so without this, per-page progress alone
-    can look stalled for minutes while a lot of real work is happening."""
+    can look stalled for minutes while a lot of real work is happening.
+
+    engines: which OCR engines to actually run (compute is skipped, not just
+    discarded, for anything not listed) - default is Tesseract alone for
+    speed (see pipeline.py's module docstring / the accuracy analysis behind
+    this default). Passing all of ALL_ENGINES restores the full 3-engine
+    ensemble + consensus-aware refine, exactly like every run before this
+    default existed; anything else falls back to a single-reading refine
+    with no ensemble/consensus signal (there's nothing to form consensus
+    from with fewer than 3 readings, so this path is only meant for exactly
+    one engine - see app 1's per-snippet "try other OCR engines", which
+    always escalates straight from one engine to all three, never to two)."""
     meta = layout.parse_filename(image_path.name, book_id=book_id)
     gray, binary = preprocessing.preprocess_page(str(image_path))
     snippets = layout.slice_page(binary)
@@ -52,12 +74,7 @@ def process_page(
         patch_path = snippets_dir / patch_name
         cv2.imwrite(str(patch_path), crop)
 
-        easy = run_easyocr(crop)
-        tess = run_tesseract(crop)
-        surya = run_surya(crop)
-        flags = compare(easy, tess, surya)
-
-        record = {
+        base = {
             "book_id": meta.book_id,
             "page_number": meta.page_number,
             "side": meta.side,
@@ -66,31 +83,75 @@ def process_page(
             "bbox": list(snippet.bbox),
             "image_patch_path": f"snippets/{patch_name}",
             "page_image_path": page_image_path,
-            "easyocr": {"text": easy.text, "avg_confidence": round(easy.avg_confidence, 4)},
-            "tesseract": {"text": tess.text, "avg_confidence": round(tess.avg_confidence, 4)},
-            "surya": {"text": surya.text, "avg_confidence": round(surya.avg_confidence, 4)},
-            "flags": flags,
         }
-
-        if refine:
-            try:
-                refined_text = refiner.refine(easy.text, tess.text, surya.text, flags)
-                record["refined"] = {"text": refined_text, "model": refiner.OLLAMA_MODEL}
-            except Exception as e:
-                # A single stuck/slow LLM call (e.g. a cold model load) must
-                # not lose an entire book's remaining pages in an unattended
-                # queue run - fall back to a non-LLM best guess and keep going;
-                # flagged so reviewers/QA can tell this snippet skipped the LLM pass.
-                refined_text = refiner.fallback_text(easy.text, tess.text, surya.text, flags)
-                record["refined"] = {"text": refined_text, "model": "fallback-no-llm"}
-                record["flags"]["refine_failed"] = str(e)
-            if corrections_db is not None:
-                refiner.log_correction(corrections_db, record, refined_text)
-
-        records.append(record)
+        records.append(ocr_snippet(crop, base, refine, corrections_db, engines))
         if on_snippet is not None:
             on_snippet(snippet_index, len(snippets))
     return records
+
+
+def ocr_snippet(crop, base: dict, refine: bool, corrections_db: sqlite3.Connection | None,
+                 engines: tuple[str, ...]) -> dict:
+    """Runs `engines` (plus refine) on one already-cropped snippet image and returns a complete
+    result.json record - `base` supplies the non-OCR fields (book_id/page_number/side/
+    paragraph_sequence/column_index/bbox/image_patch_path/page_image_path). Factored out of
+    process_page's loop so app 1's per-snippet "try other OCR engines" (see intake_app.py's
+    reocr_snippet_more) can re-run this exact logic - full 3-engine ensemble this time - on a snippet's
+    already-saved crop without re-segmenting or re-preprocessing its page."""
+    results = {name: _RUN_ENGINE[name](crop) for name in engines}
+    full_ensemble = set(engines) == set(ALL_ENGINES)
+    flags = compare(results["easyocr"], results["tesseract"], results["surya"]) if full_ensemble \
+        else {"single_engine": engines[0]}
+
+    record = {
+        **base,
+        **{name: {"text": r.text, "avg_confidence": round(r.avg_confidence, 4)} for name, r in results.items()},
+        "flags": flags,
+    }
+
+    if refine and full_ensemble:
+        easy, tess, surya = results["easyocr"], results["tesseract"], results["surya"]
+        try:
+            refined_text = refiner.refine(easy.text, tess.text, surya.text, flags)
+            record["refined"] = {"text": refined_text, "model": refiner.OLLAMA_MODEL}
+        except Exception as e:
+            # A single stuck/slow LLM call (e.g. a cold model load) must
+            # not lose an entire book's remaining pages in an unattended
+            # queue run - fall back to a non-LLM best guess and keep going;
+            # flagged so reviewers/QA can tell this snippet skipped the LLM pass.
+            refined_text = refiner.fallback_text(easy.text, tess.text, surya.text, flags)
+            record["refined"] = {"text": refined_text, "model": "fallback-no-llm"}
+            record["flags"]["refine_failed"] = str(e)
+        if corrections_db is not None:
+            refiner.log_correction(corrections_db, record, refined_text)
+    elif refine:
+        # single-engine default: skip the LLM call entirely. Real accuracy data (finalized review text
+        # vs. Tesseract + refine_single) showed it isn't reliably better than the raw reading - a wash
+        # on body/verse text, actively worse on short non-poetic text (title pages, publisher info) -
+        # and it costs a full Ollama round-trip per snippet either way. The LLM only runs once a
+        # snippet is escalated to the full ensemble (reocr_snippet), where it demonstrably helps
+        # (42.7% exact match vs. 23-28% for any single raw engine).
+        record["refined"] = {"text": results[engines[0]].text, "model": "raw-single-engine"}
+
+    return record
+
+
+def reocr_snippet(run_dir: Path, record: dict, corrections_db: sqlite3.Connection | None) -> dict:
+    """The "try other OCR engines" action on one already-OCR'd snippet: loads its saved crop
+    (record["image_patch_path"], relative to run_dir) and re-runs ocr_snippet with the full 3-engine
+    ensemble, regardless of which engine(s) `record` already has - the per-engine fields result.json
+    stores (text + avg_confidence only) can't reconstruct a real OcrResult (word_confidences/suspect
+    aren't persisted), and re-running Tesseract once more is cheap, so this always starts fresh rather
+    than trying to reuse partial results."""
+    crop_path = run_dir / record["image_patch_path"]
+    crop = cv2.imread(str(crop_path))
+    if crop is None:
+        raise RuntimeError(f"snippet crop not found: {crop_path}")
+    base = {k: record[k] for k in (
+        "book_id", "page_number", "side", "paragraph_sequence", "column_index", "bbox",
+        "image_patch_path", "page_image_path",
+    )}
+    return ocr_snippet(crop, base, True, corrections_db, ALL_ENGINES)
 
 
 def run_book(

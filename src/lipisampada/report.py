@@ -18,6 +18,18 @@ _ROW_TEMPLATE = """
 </div>
 """
 
+# One engine only (today's default - see pipeline.ocr_snippet) - no disagreement/consensus signal
+# exists to show, since there's nothing to compare against.
+_SINGLE_ENGINE_ROW_TEMPLATE = """
+<div class="row {row_class}">
+  <img src="{image_path}" alt="snippet">
+  <div class="col">
+    <div class="meta">page {page} · side {side} · para #{seq}</div>
+    <div class="engine"><span class="label">{engine_label}</span> <span class="conf">{conf:.0%}</span> {text}</div>
+{refined_row}  </div>
+</div>
+"""
+
 _REFINED_ROW_TEMPLATE = '    <div class="engine refined"><span class="label">Refined (LLM)</span> {refined_text}</div>\n'
 
 _PAGE_TEMPLATE = """<!doctype html>
@@ -52,40 +64,63 @@ _PAGE_TEMPLATE = """<!doctype html>
 """
 
 
+_ENGINE_LABEL = {"easyocr": "EasyOCR", "tesseract": "Tesseract", "surya": "Surya"}
+
+
 def generate_report(records: list[dict], run_dir: Path, output_path: Path) -> None:
     rows = []
     flagged_count = 0
     agree_count = 0
     for r in records:
-        is_flagged = r["flags"]["disagreement"] or r["flags"]["low_confidence"] or r["flags"]["surya_suspect"]
-        if is_flagged:
-            flagged_count += 1
-        if r["flags"]["majority_agreement"]:
-            agree_count += 1
+        full_ensemble = "easyocr" in r and "tesseract" in r and "surya" in r
+        flags = r.get("flags", {})
         refined_row = ""
         if "refined" in r:
             refined_row = _REFINED_ROW_TEMPLATE.format(
                 refined_text=html.escape(r["refined"]["text"]) or "<i>(empty)</i>"
             )
 
-        rows.append(
-            _ROW_TEMPLATE.format(
-                row_class="flagged" if is_flagged else "",
-                image_path=r["image_patch_path"],
-                page=r["page_number"],
-                side=html.escape(r["side"]),
-                seq=r["paragraph_sequence"],
-                agreement=" · <span class='agree'>2+ engines agree</span>" if r["flags"]["majority_agreement"] else "",
-                easy_conf=r["easyocr"]["avg_confidence"],
-                tess_conf=r["tesseract"]["avg_confidence"],
-                surya_conf=r["surya"]["avg_confidence"],
-                easy_text=html.escape(r["easyocr"]["text"]) or "<i>(empty)</i>",
-                tess_text=html.escape(r["tesseract"]["text"]) or "<i>(empty)</i>",
-                surya_text=html.escape(r["surya"]["text"]) or "<i>(empty)</i>",
-                surya_flag=" <span class='suspect'>(suspect output)</span>" if r["flags"]["surya_suspect"] else "",
-                refined_row=refined_row,
+        if full_ensemble:
+            is_flagged = flags["disagreement"] or flags["low_confidence"] or flags["surya_suspect"]
+            if is_flagged:
+                flagged_count += 1
+            if flags["majority_agreement"]:
+                agree_count += 1
+            rows.append(
+                _ROW_TEMPLATE.format(
+                    row_class="flagged" if is_flagged else "",
+                    image_path=r["image_patch_path"],
+                    page=r["page_number"],
+                    side=html.escape(r["side"]),
+                    seq=r["paragraph_sequence"],
+                    agreement=" · <span class='agree'>2+ engines agree</span>" if flags["majority_agreement"] else "",
+                    easy_conf=r["easyocr"]["avg_confidence"],
+                    tess_conf=r["tesseract"]["avg_confidence"],
+                    surya_conf=r["surya"]["avg_confidence"],
+                    easy_text=html.escape(r["easyocr"]["text"]) or "<i>(empty)</i>",
+                    tess_text=html.escape(r["tesseract"]["text"]) or "<i>(empty)</i>",
+                    surya_text=html.escape(r["surya"]["text"]) or "<i>(empty)</i>",
+                    surya_flag=" <span class='suspect'>(suspect output)</span>" if flags["surya_suspect"] else "",
+                    refined_row=refined_row,
+                )
             )
-        )
+        else:
+            # single-engine snippet (today's default - see pipeline.ocr_snippet): no other reading to
+            # compare against, so no disagreement/consensus signal to show or count.
+            engine = flags.get("single_engine") or next((e for e in _ENGINE_LABEL if e in r), "tesseract")
+            rows.append(
+                _SINGLE_ENGINE_ROW_TEMPLATE.format(
+                    row_class="",
+                    image_path=r["image_patch_path"],
+                    page=r["page_number"],
+                    side=html.escape(r["side"]),
+                    seq=r["paragraph_sequence"],
+                    engine_label=_ENGINE_LABEL.get(engine, engine),
+                    conf=r.get(engine, {}).get("avg_confidence") or 0,
+                    text=html.escape(r.get(engine, {}).get("text", "")) or "<i>(empty)</i>",
+                    refined_row=refined_row,
+                )
+            )
 
     html_out = _PAGE_TEMPLATE.format(
         count=len(records),
