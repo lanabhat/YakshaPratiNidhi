@@ -30,6 +30,59 @@ def make_run(tmp_path):
     return run
 
 
+def make_single_engine_run(tmp_path):
+    """Today's default pipeline output: only Tesseract ran (see pipeline.ocr_snippet's `engines`) -
+    no "easyocr"/"surya" keys at all, unlike make_run()'s always-all-three fake records."""
+    run = tmp_path / "run_single"
+    (run / "pages").mkdir(parents=True)
+    (run / "snippets").mkdir()
+    Image.new("L", (2400, 3400), 200).save(run / "pages" / "IMG_20260101_0001_P.png")
+    Image.new("L", (600, 80), 255).save(run / "snippets" / "IMG_20260101_0001_P_p0.png")
+    Image.new("L", (600, 80), 255).save(run / "snippets" / "IMG_20260101_0001_P_p1.png")
+    records = [
+        {
+            "book_id": "BK", "page_number": 1, "side": "P", "paragraph_sequence": 0, "column_index": 0,
+            "bbox": [1, 2, 3, 4], "image_patch_path": "snippets/IMG_20260101_0001_P_p0.png",
+            "page_image_path": "pages/IMG_20260101_0001_P.png",
+            "tesseract": {"text": "raw tess"}, "flags": {"single_engine": "tesseract"},
+            "refined": {"text": "raw tess", "model": "raw-single-engine"},
+        },
+        {
+            # no "refined" at all (refine=False path) - ai_text must still fall back to the raw reading
+            "book_id": "BK", "page_number": 1, "side": "P", "paragraph_sequence": 1, "column_index": 0,
+            "bbox": [1, 2, 3, 4], "image_patch_path": "snippets/IMG_20260101_0001_P_p1.png",
+            "page_image_path": "pages/IMG_20260101_0001_P.png",
+            "tesseract": {"text": "no refine yet"}, "flags": {"single_engine": "tesseract"},
+        },
+    ]
+    (run / "result.json").write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+    return run
+
+
+def test_publish_book_handles_single_engine_records(tmp_path):
+    """Regression: publish_book unconditionally read r["easyocr"]["text"], which crashed
+    (KeyError: 'easyocr') for the now-default Tesseract-only records - this happened during
+    _run_publish, after OCR itself had already completed successfully."""
+    run = make_single_engine_run(tmp_path)
+    storage = LocalStorage(tmp_path / "files", "http://api")
+    posted = {}
+
+    def fake_post(path, payload):
+        posted[path] = payload
+        return {"ok": True}
+
+    res = publisher.publish_book(run, "BK", storage, fake_post, progress=lambda m: None)
+    assert res["ok"] is True
+
+    bundle = json.loads(gzip.decompress(storage.path_for("books/BK/bundle.json.gz").read_bytes()))
+    assert bundle["BK:1:P:0"] == {"tesseract": "raw tess", "ai_text": "raw tess", "bbox": [1, 2, 3, 4], "flags": {"single_engine": "tesseract"}}
+    assert "easyocr" not in bundle["BK:1:P:0"] and "surya" not in bundle["BK:1:P:0"]
+
+    snippets = {(s["page_number"], s["seq"]): s for s in posted["/api/ingest/book"]["snippets"]}
+    assert snippets[(1, 0)]["ai_text"] == "raw tess"
+    assert snippets[(1, 1)]["ai_text"] == "no refine yet"  # no "refined" key - falls back to the raw tesseract reading
+
+
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTH_MODE", "dev")

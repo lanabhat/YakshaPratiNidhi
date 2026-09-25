@@ -50,6 +50,17 @@ def snippet_id(book_id: str, rec: dict) -> str:
     return f"{book_id}:{rec['page_number']}:{rec['side']}:{rec['paragraph_sequence']}"
 
 
+def _any_raw_text(r: dict) -> str:
+    """A raw-reading fallback for when a record has no "refined" text yet. Not every engine
+    necessarily ran (see pipeline.ocr_snippet's `engines` - the default is Tesseract alone, only a
+    full-ensemble/escalated snippet has all three), so this picks whichever is actually present rather
+    than assuming "easyocr" like the pre-single-engine-default code did."""
+    for name in ("easyocr", "tesseract", "surya"):
+        if name in r:
+            return r[name]["text"]
+    return ""
+
+
 def http_post(api_base: str, ingest_key: str):
     def post(path: str, payload: dict) -> dict:
         r = requests.post(
@@ -118,10 +129,10 @@ def publish_book(
     progress("uploading OCR bundle…")
     bundle = {
         snippet_id(book_id, r): {
-            "easyocr": r["easyocr"]["text"],
-            "tesseract": r["tesseract"]["text"],
-            "surya": r["surya"]["text"],
-            "ai_text": (r.get("refined") or {}).get("text") or r["easyocr"]["text"],
+            # not every engine necessarily ran - see pipeline.ocr_snippet's `engines`
+            # (default is Tesseract alone; only a full-ensemble/escalated snippet has all three)
+            **{name: r[name]["text"] for name in ("easyocr", "tesseract", "surya") if name in r},
+            "ai_text": (r.get("refined") or {}).get("text") or _any_raw_text(r),
             "bbox": r["bbox"],
             "flags": r["flags"],
         }
@@ -142,7 +153,7 @@ def publish_book(
                 "page_number": r["page_number"],
                 "side": r["side"],
                 "seq": r["paragraph_sequence"],
-                "ai_text": refined.get("text") or r["easyocr"]["text"],
+                "ai_text": refined.get("text") or _any_raw_text(r),
                 "page_image_url": url(r.get("page_image_path")),
                 "snippet_image_url": url(r["image_patch_path"]),
                 "bbox": r["bbox"],

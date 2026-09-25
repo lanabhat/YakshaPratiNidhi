@@ -94,7 +94,13 @@ def seed_from_result_json(conn: sqlite3.Connection, result_json_path: Path) -> i
     records = json.loads(result_json_path.read_text(encoding="utf-8"))
     inserted = 0
     for r in records:
-        refined = r.get("refined", {}).get("text") or r["easyocr"]["text"]
+        # not every engine necessarily ran - see pipeline.ocr_snippet's `engines` (default is Tesseract
+        # alone; only a full-ensemble/escalated snippet has all three) - missing ones seed as NULL
+        # rather than crash, same as the pre-existing handling for page_image_path/bbox below.
+        easy_text = r.get("easyocr", {}).get("text")
+        tess_text = r.get("tesseract", {}).get("text")
+        surya_text = r.get("surya", {}).get("text")
+        refined = r.get("refined", {}).get("text") or easy_text or tess_text or surya_text
         # .get(): both fields postdate this project increment — older
         # result.json files won't have them, and should seed as NULL
         # rather than crash (the review app hides the "view full page"
@@ -117,9 +123,9 @@ def seed_from_result_json(conn: sqlite3.Connection, result_json_path: Path) -> i
                 r["image_patch_path"],
                 page_image_path,
                 bbox,
-                r["easyocr"]["text"],
-                r["tesseract"]["text"],
-                r["surya"]["text"],
+                easy_text,
+                tess_text,
+                surya_text,
                 refined,
                 STATUS_PENDING,
             ),
