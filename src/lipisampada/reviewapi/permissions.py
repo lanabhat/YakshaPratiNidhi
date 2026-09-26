@@ -20,7 +20,7 @@ PERMISSIONS = {
     "approve_text": ("editor", "Accept a suggested word change; approve a snippet or a whole page"),
     "reopen": ("admin", "Re-open a finalized snippet so it can be changed again"),
     "manage_users": ("admin", "See users, change roles up to admin, invite by email, deactivate accounts"),
-    "manage_books": ("admin", "Hide or show a book in the library; see hidden books"),
+    "manage_books": ("admin", "Hide or show a book in the library; see hidden books; delete a snippet"),
     "view_stats": ("admin", "See per-contributor activity"),
     "grant_superadmin": ("superadmin", "Grant, change or remove the superadmin role"),
 }

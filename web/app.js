@@ -519,9 +519,10 @@ function snipHtml(s, book) {
     <textarea lang="kn" data-edit>${esc(mine)}</textarea>
     <div class="actions">
       <button class="btn good" data-confirm>Looks right</button>
-      <button class="btn primary" data-suggest>Suggest this edit</button>
-      ${isEditor() ? `<button class="btn warn" data-final-as-is>${s.finalized ? "Re-approve current" : "Approve as is"}</button><button class="btn warn" data-final-edit>Approve my text</button>` : ""}
+      <button class="btn primary" data-suggest hidden>Suggest this edit</button>
+      ${isEditor() ? `<button class="btn warn" data-final-as-is>${s.finalized ? "Re-approve current" : "Approve as is"}</button><button class="btn warn" data-final-edit hidden>Approve my text</button>` : ""}
       ${isAdmin() && s.finalized ? '<button class="btn danger" data-reopen>Re-open</button>' : ""}
+      ${isAdmin() ? '<button class="btn danger" data-delete>Delete snippet</button>' : ""}
     </div>
     <details data-raw><summary>Raw engine readings</summary><div class="raw-body dim small">Loading…</div></details>
   </div>`;
@@ -534,14 +535,21 @@ function bindSnip(card, s, book) {
     try { const r = await fn(); if (okMsg) toast(okMsg); await refreshSnip(card, book); return r; }
     catch (e) { toast(e.message); }
   };
-  // Editing the text turns "Looks right" off (the choice is now "suggest this edit") and
+  // Editing the text swaps which buttons apply (confirm/approve-as-is only make sense
+  // unedited; suggest/approve-my-text only make sense once something's changed), and
   // marks the card as having unsent changes, which the leave-page guard below watches.
   const ta = card.querySelector("[data-edit]");
   const sync = () => {
     const dirty = ta.value.trim() !== ta.defaultValue.trim();
     card.classList.toggle("unsent", dirty);
-    card.querySelector("[data-confirm]").disabled = dirty;
-    card.querySelector("[data-confirm]").title = dirty ? "You changed the text - click \"Suggest this edit\" instead" : "";
+    const confirmBtn = card.querySelector("[data-confirm]");
+    const suggestBtn = card.querySelector("[data-suggest]");
+    const asIsBtn = card.querySelector("[data-final-as-is]");
+    const editBtn = card.querySelector("[data-final-edit]");
+    if (confirmBtn) confirmBtn.hidden = dirty;
+    if (suggestBtn) suggestBtn.hidden = !dirty;
+    if (asIsBtn) asIsBtn.hidden = dirty;
+    if (editBtn) editBtn.hidden = !dirty;
   };
   ta.addEventListener("input", sync);
   sync();
@@ -554,6 +562,15 @@ function bindSnip(card, s, book) {
   const fa = card.querySelector("[data-final-as-is]"); if (fa) fa.onclick = () => act(() => api("/api/finalize", { method: "POST", body: { snippet_id: id } }), "Finalized");
   const fe = card.querySelector("[data-final-edit]"); if (fe) fe.onclick = () => act(() => api("/api/finalize", { method: "POST", body: { snippet_id: id, text: text() } }), "Finalized with your text");
   const ro = card.querySelector("[data-reopen]"); if (ro) ro.onclick = () => act(() => api("/api/unfinalize", { method: "POST", body: { snippet_id: id } }), "Re-opened");
+  const del = card.querySelector("[data-delete]");
+  if (del) del.onclick = async () => {
+    if (!confirm("Delete this snippet permanently? Its image and all review data (suggestions, finalization) will be removed. This cannot be undone.")) return;
+    try {
+      const r = await api(`/api/admin/snippets/${encodeURIComponent(id)}`, { method: "DELETE" });
+      toast(r.storage_warning ? `Deleted, but image cleanup failed: ${r.storage_warning}` : "Snippet deleted");
+      card.remove();
+    } catch (e) { toast(e.message); }
+  };
   card.querySelector("[data-raw]").addEventListener("toggle", async (e) => {
     if (!e.target.open) return;
     const body = card.querySelector(".raw-body");

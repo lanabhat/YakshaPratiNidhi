@@ -38,6 +38,9 @@ class LocalStorage:
         p.write_bytes(data)
         return self.url_for(key)
 
+    def delete(self, key: str) -> None:
+        self.path_for(key).unlink(missing_ok=True)
+
 
 class SupabaseStorage:
     """Supabase Storage via its REST API, public bucket. NOTE: written to the
@@ -64,6 +67,11 @@ class SupabaseStorage:
         )
         r.raise_for_status()
         return self.url_for(key)
+
+    def delete(self, key: str) -> None:
+        r = requests.delete(f"{self.url}/storage/v1/object/{self.bucket}/{key}", headers=self.headers, timeout=30)
+        if r.status_code not in (200, 204, 404):
+            r.raise_for_status()
 
 
 def from_env(api_base_url: str | None = None, backend_override: str | None = None):

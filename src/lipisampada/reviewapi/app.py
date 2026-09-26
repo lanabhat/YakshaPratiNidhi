@@ -18,6 +18,7 @@ from flask_limiter.util import get_remote_address
 
 from lipisampada import config
 from lipisampada.reviewapi import auth, db as dbmod, permissions
+from lipisampada.reviewapi import storage as storagemod
 
 
 def create_app(db_path: str | Path | None = None, local_storage_dir: str | Path | None = None) -> Flask:
@@ -35,6 +36,20 @@ def create_app(db_path: str | Path | None = None, local_storage_dir: str | Path 
     files_dir = Path(local_storage_dir or os.environ.get("LOCAL_STORAGE_DIR", data_dir / "files"))
     files_dir.mkdir(parents=True, exist_ok=True)
     app.config["DB"] = database
+
+    # Mirrors files_dir's own local/Supabase choice above rather than calling storage.from_env()
+    # blind, so a test-provided local_storage_dir is respected here too.
+    storage_backend = (
+        storagemod.SupabaseStorage(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"], os.environ.get("SUPABASE_BUCKET", "lipisampada"))
+        if os.environ.get("STORAGE_BACKEND", "local") == "supabase"
+        else storagemod.LocalStorage(files_dir, os.environ.get("API_BASE_URL", "http://127.0.0.1:8200"))
+    )
+
+    def _key_for_url(url):
+        if not url:
+            return None
+        prefix = storage_backend.url_for("")
+        return url[len(prefix):] if url.startswith(prefix) else None
 
     @app.errorhandler(dbmod.Forbidden)
     def _forbidden(e):
@@ -270,6 +285,18 @@ def create_app(db_path: str | Path | None = None, local_storage_dir: str | Path 
     def hide_book(book_id):
         database.set_hidden(need_user(), book_id, bool(body().get("hidden", True)))
         return jsonify(ok=True)
+
+    @app.delete("/api/admin/snippets/<snippet_id>")
+    def delete_snippet(snippet_id):
+        result = database.delete_snippet(need_user(), snippet_id)
+        key = _key_for_url(result.get("snippet_image_url"))
+        storage_warning = None
+        if key:
+            try:
+                storage_backend.delete(key)
+            except Exception as e:
+                storage_warning = str(e)
+        return jsonify(ok=True, storage_warning=storage_warning)
 
     @app.get("/api/admin/books/backup")
     def books_backup():

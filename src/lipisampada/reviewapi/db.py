@@ -379,6 +379,22 @@ class Db:
             self.log(actor, "hide_book" if hidden else "show_book", book_id)
             self.conn.commit()
 
+    def delete_snippet(self, actor: dict, snippet_id: str) -> dict:
+        """Removes a snippet's review data (its suggestions and the row itself). Returns the
+        snippet's stored image URL so the caller can also remove it from storage - deleting the DB
+        row first means a storage hiccup only orphans a harmless, no-longer-referenced image rather
+        than leaving a snippet visible in review with a dead image link."""
+        require(actor, "manage_books")
+        with self.lock:
+            s = self.q1("SELECT * FROM snippets WHERE id = ?", (snippet_id,))
+            if not s:
+                raise NotFound("no such snippet")
+            self.conn.execute("DELETE FROM suggestions WHERE snippet_id = ?", (snippet_id,))
+            self.conn.execute("DELETE FROM snippets WHERE id = ?", (snippet_id,))
+            self.log(actor, "delete_snippet", snippet_id, {"snippet_image_url": s["snippet_image_url"]})
+            self.conn.commit()
+        return {"snippet_image_url": s["snippet_image_url"]}
+
     # -- ingest -----------------------------------------------------------
     def ingest_book(self, book: dict, snippets: list[dict]) -> dict:
         """Idempotent. Re-ingesting refreshes image URLs/metadata but never

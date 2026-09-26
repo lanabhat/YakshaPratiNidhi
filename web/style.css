@@ -66,6 +66,7 @@ textarea { width:100%; min-height:5rem; font-size:1.05rem; line-height:1.6; resi
 .suggestion-item { background:var(--panel2); border-radius:8px; padding:.5rem .6rem; margin-top:.4rem; }
 .suggestion-text { white-space:pre-wrap; margin-top:.2rem; }
 .actions { display:flex; gap:.4rem; flex-wrap:wrap; margin-top:.5rem; }
+.actions [hidden] { display:none; }
 details { margin-top:.5rem; } details summary { cursor:pointer; color:var(--dim); font-size:.8rem; }
 .raw { font-size:.95rem; margin:.3rem 0; } .raw b { color:#7ab8ff; font-size:.72rem; display:inline-block; width:5.2rem; }
 

@@ -334,3 +334,48 @@ def test_download_a_historical_version(seeded):
     assert seeded.get(f"/api/admin/books/B1/versions/{vid}/download", headers=REVIEWER1).status_code == 403
     r = seeded.get(f"/api/admin/books/B1/versions/{vid}/download", headers=ROOT)
     assert r.status_code == 200 and r.json["book_id"] == v["book_id"]
+
+
+def test_delete_snippet_requires_manage_books(seeded):
+    assert seeded.delete(f"/api/admin/snippets/{SID}").status_code == 401  # not signed in at all
+    assert seeded.delete(f"/api/admin/snippets/{SID}", headers=REVIEWER1).status_code == 403
+    assert seeded.delete(f"/api/admin/snippets/{SID}", headers=EDITOR).status_code == 403  # editor is below admin
+    assert seeded.get(f"/api/snippet?id={SID}").status_code == 200  # still there
+
+
+def test_delete_snippet_removes_it_and_its_suggestions(seeded):
+    seeded.post("/api/suggest", headers=REVIEWER1, json={"snippet_id": SID, "kind": "edit", "text": "a suggestion"})
+    before = seeded.get("/api/library").json["books"][0]["total"]
+
+    r = seeded.delete(f"/api/admin/snippets/{SID}", headers=ROOT)
+    assert r.status_code == 200 and r.json["ok"] is True
+
+    assert seeded.get(f"/api/snippet?id={SID}").status_code == 404
+    assert seeded.get("/api/library").json["books"][0]["total"] == before - 1
+
+    # re-ingesting the same book no longer finds a suggestion to keep - it's gone, not just hidden
+    seeded.post("/api/ingest/book", headers={"X-Ingest-Key": KEY}, json={"book": {"id": "B1"}, "snippets": snippets()})
+    assert seeded.get(f"/api/snippet?id={SID}", headers=REVIEWER1).json["my_suggestion"] is None
+
+
+def test_delete_snippet_404_for_unknown_id(seeded):
+    r = seeded.delete("/api/admin/snippets/B1:9:P:9", headers=ROOT)
+    assert r.status_code == 404
+
+
+def test_delete_snippet_also_removes_its_local_storage_file(client, tmp_path):
+    r = client.post("/api/ingest/book", headers={"X-Ingest-Key": KEY}, json={
+        "book": {"id": "B2", "title": "Book Two", "page_count": 1},
+        "snippets": [{"page_number": 1, "side": "P", "seq": 0, "ai_text": "text",
+                       "snippet_image_url": "http://127.0.0.1:8200/files/books/B2/snippets/x.webp",
+                       "bbox": [0, 0, 10, 10]}],
+    })
+    assert r.status_code == 200
+    img = tmp_path / "files" / "books" / "B2" / "snippets" / "x.webp"
+    img.parent.mkdir(parents=True, exist_ok=True)
+    img.write_bytes(b"fake-image")
+
+    client.get("/api/me", headers=ROOT)
+    resp = client.delete("/api/admin/snippets/B2:1:P:0", headers=ROOT)
+    assert resp.status_code == 200 and resp.json["storage_warning"] is None
+    assert not img.exists()
