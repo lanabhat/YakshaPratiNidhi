@@ -49,6 +49,31 @@ def test_apply_changes_right_to_left_and_skips_overlaps():
     assert t.apply_changes("a c", [{"start": 1, "end": 1, "replacement": "b"}]) == "a b c"
 
 
+def test_apply_changes_preserves_newlines_outside_the_edited_span():
+    # Regression: apply_changes used to rejoin the *entire* text with " ".join(words(...)), so a
+    # newline anywhere in base_text - even far from the edited word - got silently collapsed.
+    base = "line one\nline two word3"
+    assert t.apply_changes(base, [{"start": 4, "end": 5, "replacement": "changed"}]) == "line one\nline two changed"
+
+
+def test_apply_changes_preserves_a_newline_typed_inside_the_replacement_itself():
+    base = "a b c"
+    assert t.apply_changes(base, [{"start": 1, "end": 2, "replacement": "X\nY"}]) == "a X\nY c"
+
+
+def test_diff_changes_original_and_replacement_preserve_internal_newlines():
+    # Regression: diff_changes used to build original/replacement via " ".join(words[...]), losing
+    # any newline *inside* a multi-word suggestion before it ever reached a chip or apply_changes.
+    changes = t.diff_changes("a b c", "a X\nY c")
+    assert changes == [{"start": 1, "end": 2, "original": "b", "replacement": "X\nY"}]
+
+
+def test_apply_changes_multiple_replacements_each_preserve_their_own_newlines():
+    base = "one\ntwo three\nfour"
+    changes = [{"start": 1, "end": 2, "replacement": "TWO"}, {"start": 3, "end": 4, "replacement": "FOUR"}]
+    assert t.apply_changes(base, changes) == "one\nTWO three\nFOUR"
+
+
 def test_auto_approve_needs_agreement_and_majority_over_confirms():
     two = [sug(1, "reviewer", "a X"), sug(2, "reviewer", "a X")]
     assert len(t.auto_approvable_changes(t.tally("a b", two))) == 1

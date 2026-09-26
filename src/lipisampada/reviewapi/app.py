@@ -3,10 +3,15 @@
 Run locally:  .\\run_api.ps1   ->  http://127.0.0.1:8200
 """
 
+import io
+import json
 import os
+import re
+import zipfile
+from datetime import date
 from pathlib import Path
 
-from flask import Flask, abort, g, jsonify, request, send_from_directory
+from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -18,7 +23,11 @@ from lipisampada.reviewapi import auth, db as dbmod, permissions
 def create_app(db_path: str | Path | None = None, local_storage_dir: str | Path | None = None) -> Flask:
     config.load_env()
     app = Flask(__name__)
-    CORS(app, origins=os.environ.get("CORS_ORIGINS", "*").split(","))
+    # expose_headers: Content-Disposition isn't in the default CORS-safelisted response headers, so
+    # without this, JS fetch() (used by the frontend's downloadFile() for every authenticated
+    # download - the backup zip, version exports) can't read the server-suggested filename cross-
+    # origin (e.g. Firebase Hosting -> PythonAnywhere) and would fall back to a generic one.
+    CORS(app, origins=os.environ.get("CORS_ORIGINS", "*").split(","), expose_headers=["Content-Disposition"])
 
     data_dir = Path(os.environ.get("REVIEW_API_DATA", config.PROJECT_ROOT / "review_api_data"))
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -124,6 +133,10 @@ def create_app(db_path: str | Path | None = None, local_storage_dir: str | Path 
     @app.get("/api/library")
     def library():
         return jsonify(books=database.library(include_hidden=permissions.can(g.user, "manage_books")))
+
+    @app.get("/api/dashboard")
+    def dashboard():
+        return jsonify(database.dashboard())
 
     @app.get("/api/books/<book_id>")
     def book(book_id):
@@ -257,6 +270,58 @@ def create_app(db_path: str | Path | None = None, local_storage_dir: str | Path 
     def hide_book(book_id):
         database.set_hidden(need_user(), book_id, bool(body().get("hidden", True)))
         return jsonify(ok=True)
+
+    @app.get("/api/admin/books/backup")
+    def books_backup():
+        """One zip, one .txt per book, using use="current" (final text where a snippet has been
+        approved, the working/OCR'd text everywhere else) - not use="final" (which omits any
+        unfinalized snippet entirely and would leave most books' files empty this early in review).
+        This is a backup, meant to capture all review work done so far, not just what's been signed
+        off on - the existing per-book 'Final text' download (GET /api/books/<id>/text?use=final)
+        keeps its stricter, finalized-only meaning for that separate use case."""
+        permissions.require(need_user(), "manage_books")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for b in database.library(include_hidden=True):
+                safe_title = re.sub(r"[^\w.-]", "_", b.get("title") or b["id"])
+                zf.writestr(f"{b['id']}_{safe_title}.txt", database.book_text(b["id"], "current"))
+        buf.seek(0)
+        return send_file(buf, mimetype="application/zip", as_attachment=True,
+                          download_name=f"lipi-sampada-backup-{date.today().isoformat()}.zip")
+
+    def _version_filename(book_id, title, kavi):
+        bits = "_".join(re.sub(r"[^\w.-]", "_", x) for x in (title, kavi) if x)
+        return f"{book_id}_{bits}.json" if bits else f"{book_id}.json"
+
+    def _version_download(version):
+        payload = version["payload"]
+        buf = io.BytesIO(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+        name = _version_filename(version["book_id"], payload.get("book_title"), payload.get("book_kavi"))
+        return send_file(buf, mimetype="application/json", as_attachment=True, download_name=name)
+
+    @app.get("/api/admin/books/<book_id>/export")
+    def export_book_version(book_id):
+        v = database.export_version(need_user(), book_id)
+        v["payload"] = json.loads(v["payload"])
+        return _version_download(v)
+
+    @app.post("/api/admin/books/<book_id>/import")
+    def import_book_version(book_id):
+        v = database.import_version(need_user(), book_id, body())
+        return jsonify(id=v["id"], source=v["source"], summary=v["summary"], created_at=v["created_at"])
+
+    @app.get("/api/admin/books/<book_id>/versions")
+    def book_versions(book_id):
+        return jsonify(versions=database.list_versions(need_user(), book_id))
+
+    @app.get("/api/admin/books/<book_id>/versions/<int:version_id>/download")
+    def download_book_version(book_id, version_id):
+        v = database.get_version(need_user(), book_id, version_id)
+        return _version_download(v)
+
+    @app.post("/api/admin/books/<book_id>/versions/<int:version_id>/apply")
+    def apply_book_version(book_id, version_id):
+        return jsonify(database.apply_version(need_user(), book_id, version_id))
 
     # -- ingest (called by the local intake app, never by browsers) -----------
     def _ingest_key_error():

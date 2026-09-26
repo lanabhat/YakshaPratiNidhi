@@ -30,20 +30,52 @@ function guestId() {
   if (!g) { g = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now()); localStorage.setItem("lipi_guest", g); }
   return g;
 }
-function authHeaders() {
-  const t = localStorage.getItem("lipi_token");
-  return t ? { Authorization: "Bearer " + t } : { "X-Guest-Id": guestId() };
+async function authHeaders() {
+  if (CFG.AUTH_MODE === "dev") {
+    const t = localStorage.getItem("lipi_token");
+    return t ? { Authorization: "Bearer " + t } : { "X-Guest-Id": guestId() };
+  }
+  // firebase mode: a Google ID token expires after 1 hour, so it's never cached here - fetched fresh
+  // from the SDK on every call instead. currentUser.getIdToken() returns its own cached copy and only
+  // does a network round-trip to refresh when that's actually close to/past expiry, so this is cheap.
+  if (firebaseUser) {
+    try { return { Authorization: "Bearer " + (await firebaseUser.getIdToken()) }; }
+    catch (e) { /* refresh failed (e.g. the session was revoked) - fall through to guest */ }
+  }
+  return { "X-Guest-Id": guestId() };
 }
 async function api(path, { method = "GET", body } = {}) {
   const r = await fetch(CFG.API_BASE + path, {
     method,
-    headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...authHeaders() },
+    headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(await authHeaders()) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const isJson = (r.headers.get("content-type") || "").includes("json");
   const data = isJson ? await r.json() : await r.text();
   if (!r.ok) throw new Error((data && data.error) || `HTTP ${r.status}`);
   return data;
+}
+// For an admin-gated binary download (e.g. the backup zip): a plain <a href target="_blank"> would
+// navigate with no Authorization header at all (that's only ever attached by fetch calls, never by a
+// browser-driven page navigation), so an admin-only endpoint would just 403 with nothing downloaded.
+// Fetches authenticated instead, then hands the browser a real file via a throwaway object URL.
+// `filename` is only the fallback - the server's Content-Disposition name (e.g. built from the book's
+// title/kavi) wins when present, which needs CORS's expose_headers (reviewapi/app.py) to be readable
+// here at all, since it isn't one of the default CORS-safelisted response headers.
+async function downloadFile(path, filename) {
+  const r = await fetch(CFG.API_BASE + path, { headers: await authHeaders() });
+  if (!r.ok) {
+    const data = await r.json().catch(() => null);
+    toast((data && data.error) || `Could not download (HTTP ${r.status})`);
+    return;
+  }
+  const cd = r.headers.get("Content-Disposition") || "";
+  const m = cd.match(/filename="?([^";]+)"?/);
+  const url = URL.createObjectURL(await r.blob());
+  const a = document.createElement("a");
+  a.href = url; a.download = (m && m[1]) || filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
 }
 const can = (p) => perms.includes(p);
 const isEditor = () => can("approve_text");
@@ -52,15 +84,19 @@ const pageLabel = (p) => `${p.page_number}${p.side && p.side !== "P" ? p.side : 
 
 /* ---------------- auth ---------------- */
 let onboardingShown = false;
+let firebaseUser = null;  // live firebase.User, kept in sync via onAuthStateChanged below - unused in dev mode
+function isSignedIn() {
+  return CFG.AUTH_MODE === "dev" ? !!localStorage.getItem("lipi_token") : !!firebaseUser;
+}
 async function loadMe() {
   try { const r = await api("/api/me"); me = r.user; perms = r.permissions || ["read"]; }
-  catch (e) { me = null; perms = ["read"]; localStorage.removeItem("lipi_token"); }
+  catch (e) { me = null; perms = ["read"]; if (CFG.AUTH_MODE === "dev") localStorage.removeItem("lipi_token"); }
   renderWho();
   refreshAdminBadge();
   if (me && me.application_status === "new" && !onboardingShown) { onboardingShown = true; openOnboardingForm(); }
 }
 function renderWho() {
-  const signedIn = !!localStorage.getItem("lipi_token") && me;
+  const signedIn = isSignedIn() && me;
   if (signedIn && me.banned) {
     $("who").innerHTML = `<span class="pill warn">Banned${me.ban_reason ? ": " + esc(me.ban_reason) : ""}</span><button class="btn" id="signout">Sign out</button>`;
   } else if (signedIn) {
@@ -72,9 +108,13 @@ function renderWho() {
   $("nav-admin").hidden = !can("manage_users");
   const signout = $("signout");
   if (signout) signout.onclick = () => {
-    if (CFG.AUTH_MODE === "firebase" && firebaseApp) firebase.auth().signOut().catch(() => {});
-    localStorage.removeItem("lipi_token"); me = null; perms = ["read"]; onboardingShown = false;
-    loadMe().then(route);
+    onboardingShown = false;
+    if (CFG.AUTH_MODE === "dev") {
+      localStorage.removeItem("lipi_token"); me = null; perms = ["read"];
+      loadMe().then(route);
+    } else if (firebaseApp) {
+      firebase.auth().signOut().catch(() => {});  // onAuthStateChanged (below) picks this up
+    }
   };
   const signin = $("signin");
   if (signin) signin.onclick = signIn;
@@ -103,9 +143,9 @@ async function signIn() {
     return;
   }
   try {
-    const result = await firebaseAuth().signInWithPopup(new firebase.auth.GoogleAuthProvider());
-    localStorage.setItem("lipi_token", await result.user.getIdToken());
-    await loadMe(); route();
+    await firebaseAuth().signInWithPopup(new firebase.auth.GoogleAuthProvider());
+    // no token cached here - onAuthStateChanged (below) picks up the new firebaseUser and calls
+    // loadMe()/route() itself; authHeaders() fetches a fresh ID token per call from then on
   } catch (e) {
     if (e && e.code !== "auth/popup-closed-by-user") toast("Sign-in failed: " + e.message);
   }
@@ -139,9 +179,12 @@ function openOnboardingForm() {
         renderWho();
       } else {
         toast("No problem — you're browsing as a guest.");
-        if (CFG.AUTH_MODE === "firebase" && firebaseApp) firebase.auth().signOut().catch(() => {});
-        localStorage.removeItem("lipi_token"); me = null; perms = ["read"];
-        renderWho(); route();
+        if (CFG.AUTH_MODE === "dev") {
+          localStorage.removeItem("lipi_token"); me = null; perms = ["read"];
+          renderWho(); route();
+        } else if (firebaseApp) {
+          firebase.auth().signOut().catch(() => {});  // onAuthStateChanged (below) picks this up
+        }
       }
     } catch (e) { toast(e.message); btn.disabled = false; }
   };
@@ -159,13 +202,14 @@ async function route() {
   }
   view.innerHTML = '<div class="center">Loading…</div>';
   try {
-    if (seg.length === 0) await libraryView(view);
+    if (seg.length === 0 || seg[0] === "dashboard") await dashboardView(view);  // dashboard is home now
+    else if (seg[0] === "library") await libraryView(view);
     else if (seg[0] === "book" && seg[2] === "page") await pageView(view, seg[1], parseInt(seg[3] || "1", 10), q.get("focus"));
     else if (seg[0] === "book" && seg[2] === "read") await readView(view, seg[1], parseInt(seg[3] || "1", 10));
     else if (seg[0] === "admin") await adminView(view, seg[1]);
     else view.innerHTML = '<div class="center">Not found</div>';
   } catch (e) {
-    view.innerHTML = `<div class="center err">${esc(e.message)}<br><br><a href="#/">Back to the library</a></div>`;
+    view.innerHTML = `<div class="center err">${esc(e.message)}<br><br><a href="#/">Back to the dashboard</a></div>`;
   }
 }
 /* Unsent edits: cards whose text differs from what was loaded. Leaving the page (a link, the Go box,
@@ -205,10 +249,62 @@ function bookCard(b) {
   </div>`;
 }
 
+/* ---------------- dashboard ---------------- */
+async function dashboardView(view) {
+  const d = await api("/api/dashboard");
+  const leaderboard = (rows, key, emptyMsg) => rows.length
+    ? `<ol class="leaderboard">${rows.map((r) => `<li><span>${esc(r.name || "(no name)")} <span class="dim small">${esc(r.role)}</span></span><b>${r[key]}</b></li>`).join("")}</ol>`
+    : `<p class="dim small">${emptyMsg}</p>`;
+  const pendingList = d.pending_admin_review.length
+    ? `<ul class="plain-list">${d.pending_admin_review.map((b) => `<li><a href="#/book/${esc(b.id)}/page/1">${esc(b.title || b.id)}</a> <span class="dim small">${b.needs_attention} snippet(s) awaiting approval</span></li>`).join("")}</ul>`
+    : `<p class="dim small">Nothing pending - every reviewer-agreed change has already been approved.</p>`;
+  const participationList = d.participation.length
+    ? `<ol class="leaderboard">${d.participation.slice(0, 10).map((p) => `<li><span>${esc(p.title || p.book_id)}</span><b>${p.participants}</b></li>`).join("")}</ol>`
+    : `<p class="dim small">No reviewer activity yet.</p>`;
+
+  view.innerHTML = `<h1>Dashboard</h1>
+    <div class="grid">
+      <div class="card"><h2>Top reviewers - most suggestions</h2>${leaderboard(d.top_suggesters, "suggestions", "No suggestions yet.")}</div>
+      <div class="card"><h2>Top reviewers - most adopted</h2>${leaderboard(d.top_approved, "approved", "No suggestions have been adopted into finalized text yet.")}</div>
+      <div class="card">
+        <h2>Review trends</h2>
+        <div class="stats">
+          <div><b>${d.trends.books_reviewed}</b>books reviewed</div>
+          <div><b>${d.trends.pages_reviewed}</b>pages reviewed</div>
+          <div><b>${d.trends.words_reviewed}</b>words reviewed</div>
+        </div>
+      </div>
+      <div class="card"><h2>Pending admin review <span class="dim small">(${d.pending_admin_review.length})</span></h2>${pendingList}</div>
+      <div class="card"><h2>Books by participation</h2>${participationList}</div>
+    </div>
+    <h2 style="margin-top:1.2rem">Books completed</h2>
+    <div id="dash-books-table"></div>
+    ${can("manage_books") ? `<div class="row" style="margin-top:1rem"><button class="btn primary" id="dash-backup">Download all books (backup)</button></div>` : ""}`;
+
+  const bookRows = d.books.map((b) => ({ ...b, title: b.title || b.id }));
+  let sort = { key: "completion_pct", dir: -1 };
+  const drawBooks = () => {
+    const rows = [...bookRows].sort((a, b) => (typeof a[sort.key] === "string" ? String(a[sort.key]).localeCompare(String(b[sort.key])) : a[sort.key] - b[sort.key]) * sort.dir);
+    const cols = [["title", "Title"], ["completion_pct", "Completion %"], ["finalized", "Finalized"], ["total", "Total"]];
+    $("dash-books-table").innerHTML = `<table><thead><tr>${cols.map(([k, l]) => `<th data-sort="${k}" class="sortable">${l}${sort.key === k ? (sort.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead><tbody>${rows.map((b) =>
+      `<tr><td><a href="#/book/${esc(b.id)}/page/1">${esc(b.title)}</a></td><td>${b.completion_pct}%</td><td>${b.finalized}</td><td>${b.total}</td></tr>`).join("")}</tbody></table>`;
+    document.querySelectorAll("#dash-books-table [data-sort]").forEach((th) => (th.onclick = () => { sort = { key: th.dataset.sort, dir: sort.key === th.dataset.sort ? -sort.dir : -1 }; drawBooks(); }));
+  };
+  drawBooks();
+  const backupBtn = $("dash-backup");
+  if (backupBtn) backupBtn.onclick = async () => {
+    backupBtn.disabled = true; const was = backupBtn.textContent; backupBtn.textContent = "Preparing…";
+    try { await downloadFile("/api/admin/books/backup", `lipi-sampada-backup-${new Date().toISOString().slice(0, 10)}.zip`); }
+    finally { backupBtn.disabled = false; backupBtn.textContent = was; }
+  };
+}
+
 /* ---------------- per-word rendering ---------------- */
 function renderText(s) {
-  const words = (s.current_text || "").split(/\s+/).filter(Boolean);
-  const mark = new Array(words.length).fill(null);
+  const text = s.current_text || "";
+  const spans = tokenize(text);  // [{text, start, end}, ...] - same \S+ tokenization the backend's
+                                  // word_changes indices are computed against (reviewapi/tally.py)
+  const mark = new Array(spans.length).fill(null);
   const ins = {};
   for (const g of s.tally.word_changes) {
     const who = `${g.count} reviewer${g.count === 1 ? "" : "s"}${g.editors ? `, ${g.editors} editor` : ""}${g.guests ? `, ${g.guests} guest` : ""}`;
@@ -217,9 +313,19 @@ function renderText(s) {
     else for (let i = g.start; i < g.end; i++) if (!mark[i] || g.count > mark[i].count) mark[i] = { count: g.count, tip };
   }
   const insertion = (i) => (ins[i] ? `<span class="ins" title="${esc(ins[i])}">‸</span> ` : "");
-  const html = words.map((w, i) => insertion(i) + (mark[i]
-    ? `<span class="w chg ${mark[i].count >= 2 ? "hot" : ""}" title="${esc(mark[i].tip)}">${esc(w)}</span>` : esc(w))).join(" ");
-  return html + (ins[words.length] ? ` <span class="ins" title="${esc(ins[words.length])}">‸</span>` : "");
+  // Emits each word plus whatever whitespace originally separated it from the previous one (verbatim,
+  // via esc() so a literal newline survives as-is - see the paired white-space:pre-wrap on .text/.read
+  // p in style.css) instead of always joining with a hardcoded " ", which used to flatten any line
+  // break in current_text regardless of whether the backend now preserves it.
+  let html = "";
+  let lastEnd = 0;
+  spans.forEach((sp, i) => {
+    html += esc(text.slice(lastEnd, sp.start)) + insertion(i)
+      + (mark[i] ? `<span class="w chg ${mark[i].count >= 2 ? "hot" : ""}" title="${esc(mark[i].tip)}">${esc(sp.text)}</span>` : esc(sp.text));
+    lastEnd = sp.end;
+  });
+  html += esc(text.slice(lastEnd));
+  return html + (ins[spans.length] ? ` <span class="ins" title="${esc(ins[spans.length])}">‸</span>` : "");
 }
 
 /* ---------------- word-replacement popup: select text to see what the other engines read there ---------------- */
@@ -398,7 +504,10 @@ function snipHtml(s, book) {
       ${g.editors ? `<span class="small dim">${g.editors} editor</span>` : ""}${g.guests ? `<span class="small dim">+${g.guests} guest</span>` : ""}
       ${isEditor() && !s.finalized ? `<button class="btn good" data-accept="${i}">Accept</button>` : ""}
     </div>`).join("");
-  const votes = `<div class="votes">✓ ${t.confirms.reviewers} confirmed as-is${t.confirms.guests ? ` (+${t.confirms.guests} guest)` : ""} · ${t.edit_suggestions} suggested edit${t.edit_suggestions === 1 ? "" : "s"}${s.my_suggestion ? " · <b>you've weighed in</b>" : ""}</div>`;
+  const votes = `<div class="votes">👥 ${s.reviewer_count} reviewer${s.reviewer_count === 1 ? "" : "s"} have looked at this · ✓ ${t.confirms.reviewers} confirmed as-is${t.confirms.guests ? ` (+${t.confirms.guests} guest)` : ""} · ${t.edit_suggestions} suggested edit${t.edit_suggestions === 1 ? "" : "s"}${s.my_suggestion ? " · <b>you've weighed in</b>" : ""}</div>`;
+  const suggestionsList = (s.suggestions || []).length ? `<details class="suggestions-list"><summary>Suggested edits, in full (${s.suggestions.length})</summary>
+    ${s.suggestions.map((sug) => `<div class="suggestion-item"><div class="small dim">${esc(sug.name || "someone")} (${esc(sug.role)}) · ${esc(new Date(sug.created_at).toLocaleString())}</div><div class="suggestion-text">${esc(sug.text)}</div></div>`).join("")}
+  </details>` : "";
   const mine = s.my_suggestion && s.my_suggestion.text ? s.my_suggestion.text : s.current_text;
   const flagged = t.needs_attention || (s.suggestion_count > 0 && !s.finalized);
   return `<div class="snip ${s.finalized ? "final" : ""} ${flagged ? "attn" : ""}" data-id="${esc(s.id)}">
@@ -406,7 +515,7 @@ function snipHtml(s, book) {
     ${hint ? `<div class="hint">${hint}</div>` : ""}
     ${s.snippet_image_url ? `<div class="snip-img"><img src="${esc(s.snippet_image_url)}" loading="lazy" alt="snippet"></div>` : ""}
     <div class="text">${renderText(s)}</div>
-    ${chips ? `<div class="chips">${chips}</div>` : ""}${votes}
+    ${chips ? `<div class="chips">${chips}</div>` : ""}${votes}${suggestionsList}
     <textarea lang="kn" data-edit>${esc(mine)}</textarea>
     <div class="actions">
       <button class="btn good" data-confirm>Looks right</button>
@@ -492,7 +601,7 @@ async function pageView(view, bookId, pageIndex, focusId) {
   const pageDone = page.snippets.every((s) => s.finalized);
 
   view.innerHTML = `
-    <div class="toolbar"><a href="#/">← Library</a><b>${esc(book.title || book.id)}</b><span class="dim small">${book.completion_pct}% finalized</span>
+    <div class="toolbar"><a href="#/library">← Library</a><b>${esc(book.title || book.id)}</b><span class="dim small">${book.completion_pct}% finalized</span>
       <span style="flex:1"></span><a class="btn" href="#/book/${bookId}/read/${pageIndex}">Read as full text</a></div>
     <div class="toolbar">
       <a class="btn" href="${go(1)}">⏮ First</a><a class="btn" href="${go(pageIndex - 1)}" ${page.prev ? "" : 'style="visibility:hidden"'}>◀ Prev</a>
@@ -544,7 +653,7 @@ async function readView(view, bookId, start) {
   const N = data.total_pages;
   const to = (n) => `#/book/${bookId}/read/${Math.min(Math.max(1, n), Math.max(1, N - COUNT + 1))}`;
   view.innerHTML = `
-    <div class="toolbar"><a href="#/">← Library</a><b>${esc(book.title || book.id)}</b><span class="dim small">${book.completion_pct}% finalized · pages ${start}-${Math.min(N, start + COUNT - 1)} of ${N}</span>
+    <div class="toolbar"><a href="#/library">← Library</a><b>${esc(book.title || book.id)}</b><span class="dim small">${book.completion_pct}% finalized · pages ${start}-${Math.min(N, start + COUNT - 1)} of ${N}</span>
       <span style="flex:1"></span>
       <a class="btn" target="_blank" href="${CFG.API_BASE}/api/books/${bookId}/text?use=current">Text</a>
       <a class="btn" target="_blank" href="${CFG.API_BASE}/api/books/${bookId}/text?use=final">Finalized only</a></div>
@@ -704,6 +813,7 @@ async function adminBooks(body) {
         <td>${b.hidden ? '<span class="pill warn">hidden</span>' : "visible"}</td>
         <td class="nowrap"><a class="btn" href="#/book/${esc(b.id)}/page/1">Open</a>
           <a class="btn" href="${esc(CFG.API_BASE)}/api/books/${esc(b.id)}/text?use=final" target="_blank" rel="noopener">Final text</a>
+          <button class="btn" data-versions="${esc(b.id)}">Versions</button>
           <button class="btn ${b.hidden ? "good" : "warn"}" data-hide="${esc(b.id)}" data-to="${b.hidden ? 0 : 1}">${b.hidden ? "Show" : "Hide"}</button></td></tr>`).join("")}</tbody></table>
       <p class="dim small">A hidden book disappears from the library for everyone except admins. Reviews already made are kept.</p>` : '<p class="dim">No books yet.</p>'}`;
     body.querySelectorAll("[data-hide]").forEach((b) => (b.onclick = async () => {
@@ -711,6 +821,50 @@ async function adminBooks(body) {
       catch (e) { toast(e.message); }
       draw();
     }));
+    body.querySelectorAll("[data-versions]").forEach((b) => (b.onclick = () => openVersionsModal(b.dataset.versions)));
+  };
+  await draw();
+}
+
+/* ---------------- book versions: export/import/apply/download (offline <-> online reconciliation) --- */
+async function openVersionsModal(bookId) {
+  const draw = async () => {
+    const { versions } = await api(`/api/admin/books/${encodeURIComponent(bookId)}/versions`);
+    showModal(`<h2>Versions — ${esc(bookId)}</h2>
+      <p class="dim small">Export saves a snapshot of this book's current review data as a new version, ready to download and take offline. Import saves an uploaded file as a new version too - nothing changes here until you Apply one. Applying merges it in without ever overwriting a newer suggestion or un-finalizing an already-finalized snippet - to truly roll a finalized snippet back, re-open it first (Admin → that snippet), then apply the older version.</p>
+      <div class="row" style="margin-bottom:0.8rem;">
+        <button class="btn primary" id="ver-export">Export current as a new version</button>
+        <label class="btn" style="cursor:pointer;">Import a version…<input type="file" id="ver-import" accept="application/json" hidden></label>
+      </div>
+      <div id="ver-table">${versions.length ? `<table><thead><tr><th>Source</th><th>Summary</th><th>By</th><th>When</th><th></th></tr></thead><tbody>${versions.map((v) => `
+        <tr><td>${esc(v.source)}</td><td>${esc(v.summary)}</td><td class="dim small">${esc(v.created_by || "")}</td><td class="dim small">${esc(ago(v.created_at))}</td>
+          <td class="nowrap"><button class="btn good" data-apply="${v.id}">Apply</button><button class="btn" data-download="${v.id}">Download</button></td></tr>`).join("")}</tbody></table>`
+        : '<p class="dim small">No versions yet.</p>'}</div>`);
+
+    $("ver-export").onclick = async () => {
+      $("ver-export").disabled = true;
+      try { await downloadFile(`/api/admin/books/${encodeURIComponent(bookId)}/export`, `${bookId}-version.json`); toast("Exported"); await draw(); }
+      finally { const btn = $("ver-export"); if (btn) btn.disabled = false; }
+    };
+    $("ver-import").onchange = async () => {
+      const input = $("ver-import"), file = input.files[0];
+      if (!file) return;
+      try {
+        const parsed = JSON.parse(await file.text());
+        await api(`/api/admin/books/${encodeURIComponent(bookId)}/import`, { method: "POST", body: parsed });
+        toast("Imported as a new version"); await draw();
+      } catch (e) { toast(e instanceof SyntaxError ? "That file isn't valid JSON" : e.message); }
+      input.value = "";
+    };
+    document.querySelectorAll("#ver-table [data-apply]").forEach((btn) => (btn.onclick = async () => {
+      if (!confirm("Apply this version? It merges into the live review data now - suggestions/finalizations from this version are added, never overwriting a newer or already-finalized one.")) return;
+      try {
+        const r = await api(`/api/admin/books/${encodeURIComponent(bookId)}/versions/${btn.dataset.apply}/apply`, { method: "POST" });
+        toast(`Applied: ${r.suggestions_applied} suggestion(s), ${r.finalizations_applied} finalization(s), ${r.working_text_applied} text update(s), ${r.skipped} skipped`);
+      } catch (e) { toast(e.message); }
+    }));
+    document.querySelectorAll("#ver-table [data-download]").forEach((btn) => (btn.onclick = () =>
+      downloadFile(`/api/admin/books/${encodeURIComponent(bookId)}/versions/${btn.dataset.download}/download`, `${bookId}-version-${btn.dataset.download}.json`)));
   };
   await draw();
 }
@@ -725,4 +879,14 @@ async function adminPermissions(body) {
 }
 
 /* ---------------- boot ---------------- */
-loadMe().then(route);
+if (CFG.AUTH_MODE === "dev") {
+  loadMe().then(route);
+} else {
+  // Firebase restores a persisted session asynchronously - wait for this (fires once immediately with
+  // the restored user, or null, and again on every future sign-in/out) rather than calling loadMe()
+  // with firebaseUser still unset, which would look like "signed out" for a moment on every page load.
+  firebaseAuth().onAuthStateChanged((user) => {
+    firebaseUser = user;
+    loadMe().then(route);
+  });
+}

@@ -92,6 +92,16 @@ CREATE TABLE IF NOT EXISTS audit (
     target TEXT,
     detail TEXT
 );
+CREATE TABLE IF NOT EXISTS book_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    created_by TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_book_versions_book ON book_versions(book_id, created_at);
 """
 
 
@@ -494,6 +504,105 @@ class Db:
             "working_text_applied": working_text_applied, "skipped": skipped,
         }
 
+    # -- manual export/import (browser-driven; the app 1 publish-time sync above stays automatic) ----
+    def _build_review_payload(self, book_id: str) -> dict:
+        """{"book_id", "book_title", "book_kavi", "users": [...], "snippets": [...]} - the export
+        counterpart to sync_reviews()'s import shape, built from this (the live) connection. Same
+        real-users-only, only-touched-snippets logic as publisher.sync_reviews_to_remote, which builds
+        this same shape from an *external* sqlite file (app 1's local review database) instead."""
+        book = self.q1("SELECT title, kavi FROM books WHERE id = ?", (book_id,))
+        if not book:
+            raise NotFound("no such book")
+        snip_rows = self.q("SELECT * FROM snippets WHERE book_id = ? ORDER BY seq", (book_id,))
+        users_by_id = {u["id"]: u for u in self.q("SELECT * FROM users")}
+
+        def real(u):  # a real, attributable account - not an anonymous guest
+            return u and u.get("email") and u["role"] != "guest"
+
+        users_out, seen, snippets_out = [], set(), []
+        for s in snip_rows:
+            sug_out = []
+            for sub in self.q("SELECT * FROM suggestions WHERE snippet_id = ?", (s["id"],)):
+                u = users_by_id.get(sub["user_id"])
+                if not real(u):
+                    continue
+                sug_out.append({"email": u["email"], "kind": sub["kind"], "text": sub["text"], "created_at": sub["created_at"]})
+                if u["email"].lower() not in seen:
+                    seen.add(u["email"].lower())
+                    users_out.append({"email": u["email"], "name": u.get("name"), "role": u["role"]})
+            finalizer_email = None
+            if s["finalized_by"]:
+                fu = self.q1("SELECT email, name, role FROM users WHERE uid = ?", (s["finalized_by"],))
+                if real(fu):
+                    finalizer_email = fu["email"]
+                    if fu["email"].lower() not in seen:
+                        seen.add(fu["email"].lower())
+                        users_out.append({"email": fu["email"], "name": fu["name"], "role": fu["role"]})
+            if not sug_out and not s["final_text"] and s["working_text"] == s["ai_text"]:
+                continue  # nothing to say about this snippet - not worth including
+            snippets_out.append({
+                "snippet_id": s["id"], "working_text": s["working_text"], "final_text": s["final_text"],
+                "finalized_by_email": finalizer_email, "finalized_at": s["finalized_at"], "suggestions": sug_out,
+            })
+        return {"book_id": book_id, "book_title": book["title"], "book_kavi": book["kavi"],
+                "users": users_out, "snippets": snippets_out}
+
+    def _summarize_payload(self, payload: dict) -> str:
+        snippets = payload.get("snippets", [])
+        finalized = sum(1 for s in snippets if s.get("final_text"))
+        suggestions = sum(len(s.get("suggestions", [])) for s in snippets)
+        return f"{len(snippets)} touched snippet(s), {finalized} finalized, {suggestions} suggestion(s)"
+
+    def _save_version(self, book_id: str, source: str, payload: dict, created_by: str | None) -> dict:
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        cur = self.conn.execute(
+            "INSERT INTO book_versions (book_id, source, payload, summary, created_by, created_at) VALUES (?,?,?,?,?,?)",
+            (book_id, source, payload_json, self._summarize_payload(payload), created_by, now()),
+        )
+        self.conn.commit()
+        return self.q1("SELECT * FROM book_versions WHERE id = ?", (cur.lastrowid,))
+
+    def export_version(self, actor: dict, book_id: str) -> dict:
+        """Snapshots the book's current review state as a new version (source='export') and returns it
+        (including its payload, ready to hand straight to the caller for download - no second query)."""
+        require(actor, "manage_books")
+        payload = self._build_review_payload(book_id)
+        return self._save_version(book_id, "export", payload, actor["uid"])
+
+    def import_version(self, actor: dict, book_id: str, payload: dict) -> dict:
+        """Stores an uploaded file as a new version (source='import') - purely additive, never touches
+        live snippets/suggestions. See apply_version() for the separate, explicit step that does."""
+        require(actor, "manage_books")
+        if not self.q1("SELECT 1 AS x FROM books WHERE id = ?", (book_id,)):
+            raise NotFound("no such book")
+        if not isinstance(payload, dict) or not isinstance(payload.get("users"), list) or not isinstance(payload.get("snippets"), list):
+            raise ValueError("not a valid version file - expected an object with \"users\" and \"snippets\" lists")
+        return self._save_version(book_id, "import", payload, actor["uid"])
+
+    def list_versions(self, actor: dict, book_id: str) -> list[dict]:
+        require(actor, "manage_books")
+        return self.q(
+            "SELECT id, book_id, source, summary, created_by, created_at FROM book_versions WHERE book_id = ? ORDER BY created_at DESC",
+            (book_id,),
+        )
+
+    def get_version(self, actor: dict, book_id: str, version_id: int) -> dict:
+        require(actor, "manage_books")
+        v = self.q1("SELECT * FROM book_versions WHERE id = ? AND book_id = ?", (version_id, book_id))
+        if not v:
+            raise NotFound("no such version")
+        v["payload"] = json.loads(v["payload"])
+        return v
+
+    def apply_version(self, actor: dict, book_id: str, version_id: int) -> dict:
+        """Merges a stored version's payload into live data via the exact same sync_reviews() used by
+        app 1's automatic publish-time sync - same safety rules apply (never overwrites a newer
+        suggestion from the same person, never un-finalizes an already-finalized snippet)."""
+        require(actor, "manage_books")
+        v = self.get_version(actor, book_id, version_id)
+        payload = v["payload"]
+        return self.sync_reviews(book_id, payload.get("users", []), payload.get("snippets", []))
+
     # -- tally bookkeeping ------------------------------------------------
     def _current_text(self, s: dict) -> str:
         return s["final_text"] if s["final_text"] is not None else s["working_text"]
@@ -632,10 +741,71 @@ class Db:
         s["finalized"] = s["final_text"] is not None
         s["current_text"] = self._current_text(s)
         s["tally"] = t
+        # total distinct people who've weighed in (confirm or edit) - already maintained by
+        # recompute(), no extra query needed.
+        s["reviewer_count"] = s["suggestion_count"]
+        # full text of every suggested edit, not just the derived word-level diff tally - so a
+        # reviewer/admin can actually read what someone else proposed, not only the fragments the
+        # tally agreed on. Visible to everyone (including guests), same as the rest of this response.
+        s["suggestions"] = self.q(
+            """SELECT u.name, u.role, su.kind, su.text, su.created_at FROM suggestions su
+               JOIN users u ON u.id = su.user_id WHERE su.snippet_id = ? AND su.kind = 'edit'
+               ORDER BY su.created_at""",
+            (snippet_id,),
+        )
         if viewer:
             mine = self.q1("SELECT kind, text FROM suggestions WHERE snippet_id=? AND user_id=?", (snippet_id, viewer["id"]))
             s["my_suggestion"] = mine
         return s
+
+    def dashboard(self) -> dict:
+        """Public review-activity dashboard - no permission gate beyond the site-wide 'read' every
+        route already needs. Deliberately a separate, lighter query set from contributor_stats()
+        (which is admin-only and includes email) - this is meant to be shown to everyone."""
+        # Guests and superadmins are both excluded from the leaderboards/participation below - guests
+        # for the usual "not a real attributable account" reason, superadmins because they're the
+        # platform owner/operator, not a community reviewer this leaderboard is meant to rank.
+        NOT_RANKED = "u.role NOT IN ('guest', 'superadmin')"
+        top_suggesters = self.q(
+            f"""SELECT u.name, u.role, COUNT(*) AS suggestions FROM suggestions su
+               JOIN users u ON u.id = su.user_id WHERE {NOT_RANKED}
+               GROUP BY u.id ORDER BY suggestions DESC LIMIT 10"""
+        )
+        # "approved" = this reviewer's suggested wording is exactly what the snippet was finalized
+        # with - not who clicked finalize (that's contributor_stats's "approvals", a different, admin-
+        # facing metric about editor/admin activity).
+        top_approved = self.q(
+            f"""SELECT u.name, u.role, COUNT(*) AS approved FROM suggestions su
+               JOIN users u ON u.id = su.user_id JOIN snippets s ON s.id = su.snippet_id
+               WHERE {NOT_RANKED} AND su.kind = 'edit' AND s.final_text IS NOT NULL AND su.text = s.final_text
+               GROUP BY u.id ORDER BY approved DESC LIMIT 10"""
+        )
+        # "reviewed" = touched by at least one suggestion or finalized - activity, not completion (the
+        # books table below already answers "how much is done" via completion_pct).
+        touched = self.q(
+            "SELECT book_id, page_index, working_text, final_text FROM snippets WHERE suggestion_count > 0 OR final_text IS NOT NULL"
+        )
+        words_reviewed = sum(len((r["final_text"] or r["working_text"] or "").split()) for r in touched)
+        trends = {
+            "books_reviewed": len({r["book_id"] for r in touched}),
+            "pages_reviewed": len({(r["book_id"], r["page_index"]) for r in touched}),
+            "words_reviewed": words_reviewed,
+        }
+        participation = self.q(
+            f"""SELECT s.book_id, b.title, COUNT(DISTINCT su.user_id) AS participants FROM suggestions su
+               JOIN snippets s ON s.id = su.snippet_id JOIN users u ON u.id = su.user_id
+               JOIN books b ON b.id = s.book_id WHERE {NOT_RANKED}
+               GROUP BY s.book_id ORDER BY participants DESC"""
+        )
+        books = self.library()
+        return {
+            "top_suggesters": top_suggesters,
+            "top_approved": top_approved,
+            "trends": trends,
+            "participation": participation,
+            "books": books,
+            "pending_admin_review": [b for b in books if b["needs_attention"] > 0],
+        }
 
     def library(self, include_hidden: bool = False) -> list[dict]:
         rows = self.q(
